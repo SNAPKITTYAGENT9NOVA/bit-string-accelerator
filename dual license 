@@ -1,0 +1,171 @@
+SNAPKITTY BIT HARDWARE SOURCE LICENSE
+
+Version 1.0
+
+Copyright © 2026 SnapKitty Collective. All rights reserved.
+
+1. Definitions
+
+“Software” means software distributed with this project.
+
+“Hardware” means RTL, HDL, netlists, hardware descriptions, circuit descriptions, formal specifications, verification artifacts, and other hardware-design materials contained in this project.
+
+“Core” means the bit-string accelerator implementation and its directly derived hardware implementations.
+
+“Licensee” means any person or organization exercising rights granted by this License.
+
+“Modified Core” means a modified or derivative version of the Core.
+
+2. Copyright Permission
+
+Subject to the terms of this License, SnapKitty Collective grants Licensee a worldwide, non-exclusive, royalty-free license to:
+
+- use the Hardware;
+- study the Hardware;
+- reproduce the Hardware;
+- modify the Hardware;
+- create derivative works;
+- compile, synthesize, simulate, and manufacture products incorporating the Hardware;
+- use the Hardware commercially.
+
+3. Commercial Use
+
+Commercial use is expressly permitted.
+
+Licensee may:
+
+- manufacture integrated circuits;
+- manufacture FPGA implementations;
+- manufacture ASIC implementations;
+- sell hardware incorporating the Core;
+- license products incorporating the Core;
+- provide commercial services using the Core;
+- integrate the Core into commercial systems.
+
+No additional royalty is owed to SnapKitty Collective solely because the Core is used commercially.
+
+4. Modification and Redistribution
+
+Modified versions of the Core may be created.
+
+If a Modified Core is distributed publicly, the distributor must:
+
+1. preserve this License;
+2. retain existing copyright notices;
+3. identify material modifications;
+4. provide the corresponding modified Core source;
+5. provide the same rights granted by this License for the Modified Core.
+
+A distributor may not impose additional restrictions that prevent recipients from exercising the rights granted by this License.
+
+5. Proprietary Systems
+
+Use of the Core inside a larger system does not require the larger system to be licensed under this License.
+
+A proprietary product may contain or interface with the Core.
+
+For example:
+
+Proprietary Product
+        │
+        ├── Proprietary Logic
+        ├── Proprietary Firmware
+        ├── Proprietary Software
+        │
+        └── SnapKitty Bit Accelerator
+                 │
+                 └── licensed under this License
+
+Only the Core and Modified Core remain subject to the source-sharing requirements of this License.
+
+6. Generated Hardware
+
+Synthesis products generated from the Core, including:
+
+- FPGA bitstreams;
+- ASIC netlists;
+- gate-level representations;
+- placed-and-routed designs;
+- manufactured chips;
+
+may be commercially distributed.
+
+Distribution of a generated hardware artifact does not by itself require distribution of unrelated proprietary portions of the containing system.
+
+7. Attribution
+
+Redistributions of the Core must preserve reasonable attribution to:
+
+SnapKitty Collective
+
+Copyright notices and this License must remain included with source distributions.
+
+8. Patent Grant
+
+Each contributor grants Licensee a worldwide, non-exclusive, royalty-free patent license to make, have made, use, sell, offer for sale, import, and otherwise transfer the Core, but only for patent claims necessarily infringed by that contributor's contribution to the Core.
+
+If Licensee initiates patent litigation alleging that the Core itself infringes a patent, the patent license granted to that Licensee under this section terminates as of the date the litigation is initiated.
+
+9. No Trademark License
+
+This License does not grant permission to use:
+
+SnapKitty
+SnapKitty Collective
+SnapKitty West
+
+or associated trademarks, logos, or branding except as reasonably necessary to identify the origin of the licensed work.
+
+10. No Warranty
+
+THE HARDWARE AND SOFTWARE ARE PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, TITLE, OR NON-INFRINGEMENT.
+
+LICENSEE ASSUMES ALL RISK ASSOCIATED WITH THE USE, SYNTHESIS, MANUFACTURE, DEPLOYMENT, AND OPERATION OF THE HARDWARE.
+
+11. Limitation of Liability
+
+TO THE MAXIMUM EXTENT PERMITTED BY LAW, THE COPYRIGHT HOLDERS AND CONTRIBUTORS SHALL NOT BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES ARISING FROM USE OF THE HARDWARE OR SOFTWARE.
+
+12. No Certification
+
+Use of this Hardware does not imply that SnapKitty Collective certifies:
+
+- manufactured chips;
+- FPGA implementations;
+- safety-critical systems;
+- security properties;
+- regulatory compliance;
+- performance characteristics;
+- suitability for any particular application.
+
+13. License Termination
+
+The rights granted under this License terminate automatically if Licensee materially violates its terms.
+
+Rights are reinstated automatically if the violation is cured within thirty (30) days after discovery or notification of the violation.
+
+Termination does not terminate licenses already properly granted to recipients who are not themselves in violation of this License.
+
+14. Entire License
+
+This License constitutes the complete license governing the Core unless a separate written agreement expressly supersedes it.
+
+Nothing in this License limits rights that Licensee may have independently under applicable copyright, patent, or other law.
+
+---
+
+SNAPKITTY BIT HARDWARE SOURCE LICENSE v1.0
+
+Commercial use: PERMITTED
+
+Modification: PERMITTED
+
+Commercial manufacturing: PERMITTED
+
+FPGA/ASIC implementation: PERMITTED
+
+Commercial sale: PERMITTED
+
+Modified Core redistribution: SOURCE + SAME LICENSE REQUIRED
+
+Larger proprietary systems: PERMITTED
