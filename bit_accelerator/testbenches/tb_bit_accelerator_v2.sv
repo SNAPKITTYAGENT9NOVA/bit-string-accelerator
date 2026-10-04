@@ -16,7 +16,7 @@ module tb_bit_accelerator_v2;
   logic        mem_valid, mem_write, mem_ready;
   logic [63:0] mem_addr, mem_wdata, mem_rdata;
   logic [7:0]  mem_wstrb;
-  logic        mem_rvalid, mem_fault;
+  logic        mem_rvalid = 1'b0, mem_fault = 1'b0;
 
   bit_accelerator_v2 dut (.*);
 
@@ -29,14 +29,18 @@ module tb_bit_accelerator_v2;
   int cyc = 0;
 
   assign mem_ready = !(stall_en && cyc >= stall_lo && cyc <= stall_hi);
-  assign mem_fault = 1'b0;
+  bit fault_next_read = 1'b0;   // answer the next accepted read with mem_fault
 
   always_ff @(posedge clk) begin
     mem_rvalid <= 1'b0;
+    mem_fault  <= 1'b0;
     if (mem_valid && mem_ready) begin
       if (mem_write) begin
         for (int i = 0; i < 8; i++)
           if (mem_wstrb[i]) memory[mem_addr[12:3]][i*8 +: 8] <= mem_wdata[i*8 +: 8];
+      end else if (fault_next_read) begin
+        mem_fault <= 1'b1;
+        fault_next_read <= 1'b0;
       end else begin
         mem_rvalid <= 1'b1;
         mem_rdata  <= memory[mem_addr[12:3]];
@@ -47,13 +51,14 @@ module tb_bit_accelerator_v2;
   // ---------------- per-cycle log ----------------
   logic        l_opv [0:MAXC-1], l_opr [0:MAXC-1];
   logic        l_mv  [0:MAXC-1], l_mw  [0:MAXC-1], l_mr [0:MAXC-1];
-  logic        l_rv  [0:MAXC-1], l_res [0:MAXC-1], l_bit [0:MAXC-1];
+  logic        l_rv  [0:MAXC-1], l_res [0:MAXC-1], l_bit [0:MAXC-1], l_err [0:MAXC-1];
   logic [63:0] l_wd  [0:MAXC-1];
 
   always @(posedge clk) begin
     l_opv[cyc] = op_valid;  l_opr[cyc] = op_ready;
     l_mv[cyc]  = mem_valid; l_mw[cyc]  = mem_write; l_mr[cyc] = mem_ready;
     l_rv[cyc]  = mem_rvalid; l_res[cyc] = result_valid; l_bit[cyc] = result_bit;
+    l_err[cyc] = error;
     l_wd[cyc]  = mem_wdata;
     cyc <= cyc + 1;
   end
@@ -207,6 +212,46 @@ module tb_bit_accelerator_v2;
     end
   endtask
 
+  // Read fault: the op ends at a+3 with error=1 in the result cycle and never writes.
+  task automatic t_read_fault(input string name, input logic [2:0] op);
+    int a, b;
+    logic [63:0] mem0_pre;
+    $display("TEST read fault on %s", name);
+    do_reset();
+    mem0_pre = memory[0];
+    @(negedge clk);
+    fault_next_read = 1'b1;
+    issue(op, 64'd0, 64'd5, a);
+    wait_cycles(10);
+    check(l_mv[a+1] && !l_mw[a+1],              "READ_REQUEST at a+1");
+    check(!l_rv[a+2],                           "no read data on a faulted read");
+    check(l_res[a+3],                           "RESULT_VALID at a+3");
+    check(l_err[a+3],                           "error high in the result cycle");
+    check(count_results(a, a+10) == 1,          "exactly one result pulse");
+    for (int c = a + 1; c <= a + 10; c++)
+      check(!(l_mv[c] && l_mw[c]),              "no write after a read fault");
+    check(memory[0] == mem0_pre,                "memory unchanged after a read fault");
+    // The next operation clears error.
+    issue(3'b000, 64'd0, 64'd5, b);
+    wait_cycles(8);
+    check(l_res[b+3] && !l_err[b+3] && l_bit[b+3], "next op completes with error=0");
+  endtask
+
+  // Opcodes 101..111 are not defined; v2 executes them as a read with no write.
+  task automatic t_undefined_opcode(input logic [2:0] op);
+    int a;
+    logic [63:0] mem0_pre;
+    $display("TEST undefined opcode %b reads and never writes", op);
+    do_reset();
+    mem0_pre = memory[0];
+    issue(op, 64'd0, 64'd5, a);
+    wait_cycles(10);
+    check(l_res[a+3] && l_bit[a+3] && !l_err[a+3], "completes like GET at a+3");
+    for (int c = a + 1; c <= a + 10; c++)
+      check(!(l_mv[c] && l_mw[c]),              "no write for an undefined opcode");
+    check(memory[0] == mem0_pre,                "memory unchanged");
+  endtask
+
   initial begin
     reset = 1'b1; op_valid = 1'b0; operation = '0; base_address = '0; bit_offset = '0;
     stall_en = 1'b0; stall_lo = 0; stall_hi = 0;
@@ -241,16 +286,26 @@ module tb_bit_accelerator_v2;
     t_reset_at(4, "WRITE_REQUEST");
     init_mem();
     t_reset_at(5, "WRITE_WAIT");
+    init_mem();
+
+    t_read_fault("GET", 3'b000);
+    init_mem();
+    t_read_fault("SET", 3'b010);
+    init_mem();
+    t_read_fault("TOGGLE", 3'b100);
+    init_mem();
+    t_undefined_opcode(3'b101);
+    t_undefined_opcode(3'b111);
 
     $display("\nchecks=%0d fails=%0d", checks, fails);
-    if (fails == 0) $display("ALL PASS"); else $display("FAILED");
+    if (fails != 0) $fatal(1, "FAILED");
+    $display("ALL PASS");
     $finish;
   end
 
   initial begin
     #2000000;
-    $display("TIMEOUT");
-    $finish;
+    $fatal(1, "TIMEOUT");
   end
 
 endmodule
