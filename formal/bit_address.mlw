@@ -1,0 +1,17 @@
+theory BitAddress
+  use int.Int
+  use map.Map
+  function word_size : int = 64
+  function effective_bit_address (base offset:int) : int = base + offset
+  function word_index (base offset:int) : int = effective_bit_address base offset / word_size
+  function bit_index (base offset:int) : int = effective_bit_address base offset mod word_size
+  lemma address_decomposition:
+    forall base offset:int. 0 <= offset ->
+      effective_bit_address base offset =
+        word_index base offset * word_size + bit_index base offset
+  = by omega
+  lemma bit_index_bounds:
+    forall base offset:int. 0 <= offset ->
+      0 <= bit_index base offset < word_size
+  = by omega
+end
