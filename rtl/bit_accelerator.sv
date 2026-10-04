@@ -46,7 +46,7 @@ module bit_accelerator #(
         IDLE: if (op_valid) begin
           base_q <= base_address; off_q <= bit_offset; op_q <= operation;
           abs_bit_q <= (base_address << 3) + bit_offset;
-          bit_idx_q <= ((base_address << 3) + bit_offset)[5:0];
+          bit_idx_q <= ((base_address << 3) + bit_offset) & 6'h3F;
           req_addr <= ((((base_address << 3) + bit_offset) >> 6) << 3);
           state <= READ_REQ;
         end
