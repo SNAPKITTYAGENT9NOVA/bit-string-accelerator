@@ -2,7 +2,11 @@
 name = "gpu"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.85"
+description = "Composable element-wise OpenCL kernels over canonical u8 Boolean buffers"
+repository = "https://github.com/SNAPKITTYAGENT9NOVA/bit-string-accelerator"
+license = "EPL-2.0"
+publish = false
 
 [dependencies]
-
 ocl = "0.19"

@@ -31,13 +31,20 @@ impl Expr {
     pub fn negate(e: Expr) -> Expr {
         Expr::Negate(Box::new(e))
     }
+    // Constructor named after the node it builds; `Expr` is not an arithmetic type.
+    #[allow(clippy::should_implement_trait)]
     pub fn add(a: Expr, b: Expr) -> Expr {
         Expr::Add(Box::new(a), Box::new(b))
     }
 
     /// Evaluate on the device over the first `count` elements of `inputs`.
     /// Inputs are never mutated; the result is a fresh buffer of `count` elements.
-    pub fn eval(&self, ctx: &GpuContext, inputs: &[&Buffer<u8>], count: usize) -> Result<Buffer<u8>> {
+    pub fn eval(
+        &self,
+        ctx: &GpuContext,
+        inputs: &[&Buffer<u8>],
+        count: usize,
+    ) -> Result<Buffer<u8>> {
         if count == 0 {
             return Err(GpuError::InvalidCount(0));
         }
@@ -58,10 +65,15 @@ impl Expr {
         count: usize,
     ) -> Result<Val<'a>> {
         match self {
-            Expr::Input(i) => inputs
-                .get(*i)
-                .map(|b| Val::Borrowed(*b))
-                .ok_or(GpuError::MissingInput { index: *i, supplied: inputs.len() }),
+            Expr::Input(i) => {
+                inputs
+                    .get(*i)
+                    .map(|b| Val::Borrowed(b))
+                    .ok_or(GpuError::MissingInput {
+                        index: *i,
+                        supplied: inputs.len(),
+                    })
+            }
             Expr::Negate(e) => {
                 let v = e.eval_val(ctx, inputs, count)?;
                 let out = ctx.alloc(count)?;
@@ -83,7 +95,13 @@ impl Expr {
 struct Identity;
 
 impl UnaryOp for Identity {
-    fn launch(&self, ctx: &GpuContext, input: &Buffer<u8>, output: &Buffer<u8>, count: usize) -> Result<()> {
+    fn launch(
+        &self,
+        ctx: &GpuContext,
+        input: &Buffer<u8>,
+        output: &Buffer<u8>,
+        count: usize,
+    ) -> Result<()> {
         ctx.work_sizes(count, &[("input", input.len()), ("output", output.len())])?;
         input
             .cmd()

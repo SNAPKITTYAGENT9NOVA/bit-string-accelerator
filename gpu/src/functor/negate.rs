@@ -1,4 +1,4 @@
-use super::{GpuContext, Result, UnaryOp, GpuError};
+use super::{GpuContext, GpuError, Result, UnaryOp};
 use ocl::Buffer;
 use std::fmt;
 
@@ -27,7 +27,11 @@ impl fmt::Display for NegateError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             NegateError::InvalidBoolean { index, value } => {
-                write!(f, "invalid boolean at index {}: expected 0x00 or 0x01, got 0x{:02x}", index, value)
+                write!(
+                    f,
+                    "invalid boolean at index {}: expected 0x00 or 0x01, got 0x{:02x}",
+                    index, value
+                )
             }
             NegateError::OpenCl(msg) => write!(f, "OpenCL error: {}", msg),
         }
@@ -57,7 +61,10 @@ impl Negate {
     fn validate_input(input_data: &[u8]) -> std::result::Result<(), NegateError> {
         for (i, &byte) in input_data.iter().enumerate() {
             if byte != 0x00 && byte != 0x01 {
-                return Err(NegateError::InvalidBoolean { index: i, value: byte });
+                return Err(NegateError::InvalidBoolean {
+                    index: i,
+                    value: byte,
+                });
             }
         }
         Ok(())

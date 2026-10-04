@@ -17,15 +17,19 @@ impl Kernel for Add {
             }
         "#
     }
-    fn name() -> &'static str { "add" }
-    fn local_size() -> usize { 4 }
+    fn name() -> &'static str {
+        "add"
+    }
+    fn local_size() -> usize {
+        4
+    }
 
     fn run(&self, proque: &ProQue) -> Result<Vec<f32>> {
         let buffer = proque.create_buffer::<f32>()?;
-        let kernel = proque.kernel_builder(Self::name())
-            .arg(&buffer)
-            .build()?;
-        unsafe { kernel.cmd().local_work_size(Self::local_size()).enq()?; }
+        let kernel = proque.kernel_builder(Self::name()).arg(&buffer).build()?;
+        unsafe {
+            kernel.cmd().local_work_size(Self::local_size()).enq()?;
+        }
         let mut result = vec![0.0f32; 128];
         buffer.cmd().read(&mut result).enq()?;
         Ok(result)
@@ -49,10 +53,7 @@ fn execute<K: Kernel>(kernel: K, proque: &ProQue) -> Result<Vec<f32>> {
 }
 
 fn main() -> Result<()> {
-    let proque = ProQue::builder()
-        .src(Add::src())
-        .dims(128)
-        .build()?;
+    let proque = ProQue::builder().src(Add::src()).dims(128).build()?;
 
     let result = execute(Add, &proque)?;
     println!("{}", format_output(&result));
@@ -75,7 +76,10 @@ fn negate_demo() {
     };
     let input = [true, false, true, true, false];
     let once = Negate.run_bools(&ctx, &input).expect("negate failed");
-    let twice = Negate.then(Negate).run_bools(&ctx, &input).expect("negate∘negate failed");
+    let twice = Negate
+        .then(Negate)
+        .run_bools(&ctx, &input)
+        .expect("negate∘negate failed");
     println!("\ndevice : {}", ctx.device_name().unwrap_or_default());
     println!("input  : {input:?}");
     println!("¬input : {once:?}");
