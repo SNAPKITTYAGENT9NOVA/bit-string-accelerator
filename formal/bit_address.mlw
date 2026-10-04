@@ -1,17 +1,111 @@
-theory BitAddress
+(* Address mapping of rtl/bit_accelerator.sv.
+
+   Part 1 states the mapping over unbounded integers.
+   Part 2 states the RTL's 64-bit datapath over bit-vectors and proves it
+   implements Part 1 whenever (base << 3) + offset does not overflow. *)
+
+module BitAddress
   use int.Int
-  use map.Map
-  function word_size : int = 64
-  function effective_bit_address (base offset:int) : int = base + offset
-  function word_index (base offset:int) : int = effective_bit_address base offset / word_size
-  function bit_index (base offset:int) : int = effective_bit_address base offset mod word_size
-  lemma address_decomposition:
-    forall base offset:int. 0 <= offset ->
-      effective_bit_address base offset =
-        word_index base offset * word_size + bit_index base offset
-  = by omega
-  lemma bit_index_bounds:
-    forall base offset:int. 0 <= offset ->
-      0 <= bit_index base offset < word_size
-  = by omega
+  use int.EuclideanDivision
+
+  constant word_bits : int = 64
+
+  (* base is a byte address, offset a bit offset; result is a bit address. *)
+  function effective_bit (base offset : int) : int = base * 8 + offset
+  function word_index (b : int) : int = div b word_bits
+  function bit_index  (b : int) : int = mod b word_bits
+  function word_byte_address (b : int) : int = word_index b * 8
+
+  lemma decomposition :
+    forall b : int. b = word_index b * word_bits + bit_index b
+
+  lemma bit_index_bounds :
+    forall b : int. 0 <= bit_index b < word_bits
+
+  lemma word_byte_address_aligned :
+    forall b : int. mod (word_byte_address b) 8 = 0
+
+  (* (word, bit) identifies a bit address uniquely. *)
+  lemma decomposition_injective :
+    forall b1 b2 : int.
+      word_index b1 = word_index b2 -> bit_index b1 = bit_index b2 -> b1 = b2
+
+  (* Offsets 0..63 from a word-aligned base stay in that word, in order. *)
+  lemma aligned_base_same_word :
+    forall base k : int. mod base 8 = 0 -> 0 <= k < word_bits ->
+      word_index (effective_bit base k) = div base 8 /\
+      bit_index (effective_bit base k) = k
+
+  (* Adding 64 to the bit address moves to the next word, same bit. *)
+  lemma next_word :
+    forall b : int.
+      word_index (b + word_bits) = word_index b + 1 /\
+      bit_index (b + word_bits) = bit_index b
+
+  (* Offsets 0 and 64 from any base land in adjacent words. *)
+  lemma offset_64_next_word :
+    forall base : int.
+      word_index (effective_bit base 64) = word_index (effective_bit base 0) + 1
+end
+
+module RtlDatapath
+  use int.Int
+  use int.EuclideanDivision
+  use bv.BV64
+  use BitAddress
+
+  (* The RTL expressions, verbatim in bit-vector form. *)
+  function eff_bit (base offset : t) : t = add (lsl_bv base (3 : t)) offset
+  function bit_idx (e : t) : t = bw_and e (63 : t)
+  function req_addr (e : t) : t = lsl_bv (lsr_bv e (6 : t)) (3 : t)
+
+  lemma bit_idx_lt_64 :
+    forall e : t. ult (bit_idx e) (64 : t)
+
+  lemma req_addr_aligned :
+    forall e : t. bw_and (req_addr e) (7 : t) = (0 : t)
+
+  (* The word address and bit index recompose the effective bit address. *)
+  lemma rtl_decomposition :
+    forall e : t. add (lsl_bv (lsr_bv e (6 : t)) (6 : t)) (bit_idx e) = e
+
+  (* The shift/mask forms equal division, remainder and multiplication. *)
+  lemma bit_idx_is_urem :
+    forall e : t. bit_idx e = urem e (64 : t)
+
+  lemma req_addr_is_udiv_mul :
+    forall e : t. req_addr e = mul (udiv e (64 : t)) (8 : t)
+
+  lemma shl3_is_mul8 :
+    forall b : t. lsl_bv b (3 : t) = mul b (8 : t)
+
+  (* Trusted base: four specialisations of facts in the Why3 standard library
+     module bv.BV64 (axioms to_uint_urem and to_uint_udiv at divisor 64, lemmas
+     to_uint_mul_bounded at factor 8 and to_uint_add_bounded). The SMT drivers
+     map urem/udiv/mul/add to native bit-vector operations and do not pass the
+     library's integer axioms on, so these instances are restated here. Each is
+     true in SMT-LIB bit-vector semantics. Everything else in this file is
+     proved, not assumed. *)
+  axiom urem_64 : forall e : t. t'int (urem e (64 : t)) = mod (t'int e) 64
+  axiom udiv_64 : forall e : t. t'int (udiv e (64 : t)) = div (t'int e) 64
+  axiom mul_8_bounded :
+    forall a : t. t'int a * 8 < two_power_size -> t'int (mul a (8 : t)) = t'int a * 8
+  axiom add_bounded :
+    forall a b : t. t'int a + t'int b < two_power_size ->
+      t'int (add a b) = t'int a + t'int b
+
+  lemma udiv_64_bound : forall e : t. 0 <= div (t'int e) 64 * 8 < two_power_size
+
+  (* Bridge to the integer specification. *)
+  lemma bit_idx_is_mod :
+    forall e : t. t'int (bit_idx e) = bit_index (t'int e)
+
+  lemma req_addr_is_word_byte_address :
+    forall e : t. t'int (req_addr e) = word_byte_address (t'int e)
+
+  (* Without overflow the 64-bit sum equals the integer effective address. *)
+  lemma eff_bit_no_overflow :
+    forall base offset : t.
+      t'int base * 8 + t'int offset < two_power_size ->
+      t'int (eff_bit base offset) = effective_bit (t'int base) (t'int offset)
 end
