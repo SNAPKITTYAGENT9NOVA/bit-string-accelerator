@@ -1,0 +1,9 @@
+theory BitExtract
+  use int.Int
+  function mask (i:int) : int = 2 ^ i
+  function extract (word i:int) : int = mod (div word (mask i)) 2
+  lemma extract_is_bit:
+    forall word i:int. 0 <= word -> 0 <= i < 64 ->
+      0 <= extract word i <= 1
+  = by omega
+end

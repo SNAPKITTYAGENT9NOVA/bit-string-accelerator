@@ -1,0 +1,194 @@
+module BitAddressingProofs
+
+  use int.Int
+  use BitAddressing
+
+  (* ============================================================
+     PROOF 1: absolute_bit_address_valid
+     ============================================================ *)
+
+  lemma absolute_bit_address_valid_proof :
+    forall base : int, offset : int.
+      (0 <= base && 0 <= offset) ->
+      (absolute_bit_address base offset >= 0)
+  = by
+      intros base offset h_base h_offset;
+      unfold absolute_bit_address;
+      omega
+
+  (* ============================================================
+     PROOF 2: word_index_positive
+     ============================================================ *)
+
+  lemma word_index_positive_proof :
+    forall bit_addr : int.
+      (0 <= bit_addr && is_valid_bit_address bit_addr) ->
+      (0 <= word_index bit_addr && word_index bit_addr < max_address)
+  = by
+      intros bit_addr h_valid;
+      unfold is_valid_bit_address word_index in h_valid;
+      omega
+
+  (* ============================================================
+     PROOF 3: bit_index_in_range
+     ============================================================ *)
+
+  lemma bit_index_in_range_proof :
+    forall bit_addr : int.
+      is_valid_bit_address bit_addr ->
+      (0 <= bit_index_in_word bit_addr && bit_index_in_word bit_addr < word_bits)
+  = by
+      intros bit_addr h_valid;
+      unfold is_valid_bit_address bit_index_in_word word_bits in h_valid;
+      omega
+
+  (* ============================================================
+     PROOF 4: bit_index_less_than_64
+     ============================================================ *)
+
+  lemma bit_index_less_than_64_proof :
+    forall bit_addr : int.
+      is_valid_bit_address bit_addr ->
+      bit_index_in_word bit_addr < 64
+  = by
+      intros bit_addr h_valid;
+      unfold is_valid_bit_address bit_index_in_word in h_valid;
+      omega
+
+  (* ============================================================
+     PROOF 5: euclidean_division
+     Division property: bit_addr = (word_index * word_bits) + bit_index_in_word
+     ============================================================ *)
+
+  lemma euclidean_division_proof :
+    forall bit_addr : int.
+      is_valid_bit_address bit_addr ->
+      bit_addr = (word_index bit_addr * word_bits) + bit_index_in_word bit_addr
+  = by
+      intros bit_addr h_valid;
+      unfold is_valid_bit_address word_index bit_index_in_word word_bits in h_valid;
+      omega
+
+  (* ============================================================
+     PROOF 6: bit_0_maps_to_word_0
+     Offset 0 maps to the word containing the base address
+     ============================================================ *)
+
+  lemma bit_0_maps_to_word_0_proof :
+    forall base : int.
+      is_valid_bit_address (absolute_bit_address base 0) ->
+      word_index (absolute_bit_address base 0) = base / 8
+  = by
+      intros base h_valid;
+      unfold is_valid_bit_address absolute_bit_address word_index in h_valid;
+      omega
+
+  (* ============================================================
+     PROOF 7: bit_63_same_word
+     Bits 0-63 in the same base address map to the same word
+     ============================================================ *)
+
+  lemma bit_63_same_word_proof :
+    forall base : int.
+      is_valid_bit_address (absolute_bit_address base 0) &&
+      is_valid_bit_address (absolute_bit_address base 63) ->
+      word_index (absolute_bit_address base 0) = word_index (absolute_bit_address base 63)
+  = by
+      intros base h_both;
+      unfold is_valid_bit_address absolute_bit_address word_index in h_both;
+      omega
+
+  (* ============================================================
+     PROOF 8: bit_64_next_word
+     Bit 64 crosses into the next word
+     ============================================================ *)
+
+  lemma bit_64_next_word_proof :
+    forall base : int.
+      is_valid_bit_address (absolute_bit_address base 0) &&
+      is_valid_bit_address (absolute_bit_address base 64) ->
+      word_index (absolute_bit_address base 64) = word_index (absolute_bit_address base 0) + 1
+  = by
+      intros base h_both;
+      unfold is_valid_bit_address absolute_bit_address word_index in h_both;
+      omega
+
+  (* ============================================================
+     PROOF 9: bit_index_wraps_at_64
+     Bit index wraps from 63 to 0 when crossing word boundary
+     ============================================================ *)
+
+  lemma bit_index_wraps_at_64_proof :
+    forall base : int.
+      is_valid_bit_address (absolute_bit_address base 63) &&
+      is_valid_bit_address (absolute_bit_address base 64) ->
+      bit_index_in_word (absolute_bit_address base 63) = 63 &&
+      bit_index_in_word (absolute_bit_address base 64) = 0
+  = by
+      intros base h_both;
+      unfold is_valid_bit_address absolute_bit_address bit_index_in_word in h_both;
+      omega
+
+  (* ============================================================
+     PROOF 10: bit_get_binary
+     BIT_GET always returns 0 or 1
+     ============================================================ *)
+
+  lemma bit_get_binary_proof :
+    forall memory base offset result : int.
+      bit_get_correct memory base offset result ->
+      (result = 0 || result = 1)
+  = by
+      intros memory base offset result h_correct;
+      unfold bit_get_correct in h_correct;
+      exact h_correct
+
+  (* ============================================================
+     PROOF 11: bit_get_deterministic
+     BIT_GET is deterministic: same inputs always give same output
+     ============================================================ *)
+
+  lemma bit_get_deterministic_proof :
+    forall memory base offset result1 result2 : int.
+      bit_get_correct memory base offset result1 ->
+      bit_get_correct memory base offset result2 ->
+      result1 = result2
+  = by
+      intros memory base offset result1 result2 h1 h2;
+      unfold bit_get_correct in h1 h2;
+      omega
+
+  (* ============================================================
+     PROOF 12: disjoint_words_independent
+     Operations on different words don't interfere
+     ============================================================ *)
+
+  lemma disjoint_words_independent_proof :
+    forall base1 base2 offset1 offset2 : int.
+      word_index (absolute_bit_address base1 offset1) <>
+      word_index (absolute_bit_address base2 offset2) ->
+      (forall m1 m2 old_mem new_mem : int -> int.
+        bit_set_correct old_mem new_mem base1 offset1 ->
+        bit_get_correct new_mem base2 offset2 m2 ->
+        bit_get_correct old_mem base2 offset2 m2)
+  = by
+      intros base1 base2 offset1 offset2 h_disjoint;
+      intros m1 m2 old_mem new_mem h_set h_get_new;
+      unfold bit_set_correct bit_get_correct in h_set h_get_new;
+      (* The word indices are different, so modifying word1 doesn't affect word2 *)
+      constructor;
+      omega
+
+  (* ============================================================
+     Helper: Powers of 2
+     ============================================================ *)
+
+  lemma power_of_2_nonzero :
+    forall n : int.
+      0 <= n && n < 64 ->
+      0 < 2 ^ n
+  = by
+      intros n h_range;
+      omega
+
+end
