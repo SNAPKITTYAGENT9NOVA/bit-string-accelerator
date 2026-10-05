@@ -1,4 +1,3 @@
-`timescale 1ns/1ps
 // Board-independent hardware top: bit_accelerator + 256 x 64-bit block RAM,
 // controlled over a UART (8N1). All multi-byte fields are little-endian.
 //
@@ -30,10 +29,11 @@ module fpga_top #(
   logic       tx_start, tx_ready;
   logic [7:0] tx_data;
 
-  uart_rx #(.CLKS_PER_BIT(CLKS_PER_BIT)) u_rx (
-    .clk, .reset, .rx(uart_rx), .valid(rx_valid), .data(rx_data));
-  uart_tx #(.CLKS_PER_BIT(CLKS_PER_BIT)) u_tx (
-    .clk, .reset, .start(tx_start), .data(tx_data), .ready(tx_ready), .tx(uart_tx));
+  localparam logic [9:0] CPB = 10'(CLKS_PER_BIT);
+  uart_rx u_rx (
+    .clk, .reset, .cpb(CPB), .rx(uart_rx), .valid(rx_valid), .data(rx_data));
+  uart_tx u_tx (
+    .clk, .reset, .cpb(CPB), .start(tx_start), .data(tx_data), .ready(tx_ready), .tx(uart_tx));
 
   // ------------------------------------------------------------- accelerator
   logic        op_valid, op_ready;

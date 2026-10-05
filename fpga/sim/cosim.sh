@@ -10,7 +10,7 @@ SEED=${2:-1}
 BUILD=${BUILD:-build}
 mkdir -p "$BUILD"
 rm -rf "$BUILD/pty"
-verilator --cc --exe --build -O2 -Wno-fatal -Wno-lint -GCLKS_PER_BIT=8 --top-module fpga_top \
+verilator --cc --exe --build -O2 --timescale 1ns/1ps -Wno-fatal -Wno-lint -GCLKS_PER_BIT=8 --top-module fpga_top \
   -Mdir "$BUILD/pty" -CFLAGS -DCPB=8 -LDFLAGS -lutil \
   ../rtl/bit_accelerator.sv rtl/uart_rx.sv rtl/uart_tx.sv rtl/word_memory.sv rtl/fpga_top.sv \
   "$PWD/sim/uart_pty.cpp" > "$BUILD/pty_build.log"

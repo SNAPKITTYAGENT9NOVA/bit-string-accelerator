@@ -1,4 +1,3 @@
-`timescale 1ns/1ps
 // Synchronous reset: held for 2^CW cycles after configuration and while the
 // (already active-high) button input is pressed. The button is synchronized.
 module power_on_reset #(

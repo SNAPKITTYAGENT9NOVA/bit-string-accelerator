@@ -127,3 +127,37 @@ jobs:
           path: |
             asic/build/bit_accelerator_sky130.v
             asic/build/area.rpt
+
+  pcie:
+    name: PCIe engine (lint, equivalence vs reference core)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends iverilog verilator
+      - run: make -C pcie lint sim sim-verilator
+
+  pcie-cosim:
+    name: PCIe SoC generation + host co-simulation
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends verilator
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install LiteX
+        run: |
+          for r in m-labs/migen enjoy-digital/litex litex-hub/litex-boards enjoy-digital/litepcie \
+                   enjoy-digital/litedram enjoy-digital/liteeth enjoy-digital/litescope; do
+            git clone --depth 1 https://github.com/$r /tmp/$(basename $r)
+            pip install -e /tmp/$(basename $r)
+          done
+      - run: make -C pcie soc cosim
+
+  tapeout:
+    name: Tiny Tapeout project (sync, RTL test)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends iverilog
+      - run: make -C tapeout check-sync test

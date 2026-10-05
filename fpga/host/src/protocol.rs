@@ -33,7 +33,8 @@ pub const UNKNOWN: u8 = b'?';
 pub const STATUS_TAG: u8 = 0xA0;
 pub const STATUS_TAG_MASK: u8 = 0xFC;
 
-/// Number of 64-bit words in the FPGA RAM; byte addresses 0..WORDS*8 are in range.
+/// Number of 64-bit words in the FPGA build's RAM; byte addresses 0..WORDS*8 are in
+/// range. The Tiny Tapeout chip has 4 (`--words 4`).
 pub const WORDS: usize = 256;
 
 pub fn write_frame(index: u8, value: u64) -> Vec<u8> {
@@ -84,11 +85,11 @@ pub fn parse_status(byte: u8) -> Result<Status, String> {
 /// Host-side reference model of one operation on a RAM image, matching the RTL:
 /// effective bit = (base << 3) + offset (mod 2^64), byte address = (bit >> 6) << 3,
 /// out-of-range addresses and undefined opcodes report an error and do not write.
-pub fn model_exec(ram: &mut [u64; WORDS], opcode: u8, base: u64, offset: u64) -> Status {
+pub fn model_exec(ram: &mut [u64], opcode: u8, base: u64, offset: u64) -> Status {
     let eff = (base << 3).wrapping_add(offset);
     let word = eff >> 6;
     let bit = (eff & 63) as u32;
-    if word >= WORDS as u64 || opcode > 4 {
+    if word >= ram.len() as u64 || opcode > 4 {
         return Status {
             error: true,
             bit: false,
@@ -188,6 +189,11 @@ mod tests {
         assert!(model_exec(&mut ram, 0, 2048, 0).error); // byte 2048 is past the RAM
         assert!(model_exec(&mut ram, 5, 0, 0).error); // undefined opcode
         assert!(model_exec(&mut ram, 0, u64::MAX, 0).error);
+
+        let mut small = [0u64; 4]; // Tiny Tapeout RAM: bytes 0..31
+        assert!(!model_exec(&mut small, 2, 31, 7).error);
+        assert_eq!(small[3], 1 << 63);
+        assert!(model_exec(&mut small, 0, 32, 0).error);
     }
 
     #[test]

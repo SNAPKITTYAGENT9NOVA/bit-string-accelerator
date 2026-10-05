@@ -1,4 +1,3 @@
-`timescale 1ns/1ps
 // Single-port 64-bit word memory with synchronous read (maps to block RAM).
 module word_memory #(
   parameter int DEPTH = 256
