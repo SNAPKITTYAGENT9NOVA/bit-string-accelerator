@@ -41,6 +41,10 @@ reports `error = 1`; whether the memory kept the write is up to the memory.
 | Mutation | 7 hand-made RTL mutants (wrong bit index, wrong address, SET as XOR, ...) | all detected |
 | Proofs | `formal/*.mlw`, Why3 1.6 + Z3 4.8.12 | 38/38 goals valid |
 | Timing model | `spice/bit_extract.sp`, ngspice 42 | tpd ≈ 94 ps (RC model, not extracted silicon) |
+| FPGA wrapper | `fpga/tb/tb_fpga_top.sv` over the UART: RTL (Icarus, Verilator), iCE40 and ECP5 gate-level netlists | 0 failures on each |
+| Host tool | `fpga/sim/cosim.sh`: `bitacc selftest` against the RTL through a pseudo-terminal | 2000 operations, 0 mismatches |
+| FPGA place-and-route | nextpnr, 5 seeds | iCE40UP5K 39.06 MHz, ECP5-25F 73.22 MHz; both meet board clocks |
+| ASIC synthesis | Yosys + ABC on sky130_fd_sc_hd, OpenSTA | 1538 cells, 10,063 µm², netlist proved equal to RTL, 500 MHz pre-layout |
 
 `formal/bit_address.mlw` proves that the RTL's shift/mask datapath equals the
 integer address specification when `(base << 3) + offset` does not overflow.
