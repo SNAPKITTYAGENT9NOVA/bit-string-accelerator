@@ -20,8 +20,13 @@ refreshes them.
 
 ## Results
 
-See [`SIGNOFF.md`](SIGNOFF.md) for the hardened layout: DRC, LVS, antenna,
-timing, utilization and gate-level simulation.
+Hardened locally with the same tool versions as Tiny Tapeout's action. The
+details are in [`SIGNOFF.md`](SIGNOFF.md):
+- DRC, LVS and antenna clean.
+- Setup and hold met at all 9 corners.
+- The Tiny Tapeout precheck passes.
+- The post-layout gate-level test passes (2,183 checks).
+- Known residual: max-slew warnings, documented with their cause.
 
 ## Testing
 

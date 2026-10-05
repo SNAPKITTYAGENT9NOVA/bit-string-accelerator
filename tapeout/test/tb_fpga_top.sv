@@ -29,7 +29,14 @@ module tb_fpga_top;
 `else
   logic [6:0] div = 7'(CPB / 4);
 `endif
+`ifdef GL_TEST
+  supply1 vpwr;                 // the powered post-layout netlist has inout supply pins
+  supply0 vgnd;
+`endif
   tt_um_snapkittyagent9nova_bitacc dut (
+`ifdef GL_TEST
+    .VPWR(vpwr), .VGND(vgnd),
+`endif
     .ui_in({div[6:3], uart_rx, div[2:0]}), .uo_out, .uio_in(8'h00), .uio_out, .uio_oe,
     .ena(1'b1), .clk, .rst_n(!reset));
   assign uart_tx   = uo_out[4];

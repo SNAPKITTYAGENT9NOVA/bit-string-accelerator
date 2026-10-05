@@ -1,0 +1,4 @@
+build/
+host/build_cosim/
+host/*.o
+host/bitacc_pcie

@@ -10,6 +10,8 @@
 #   make fpga      FPGA wrapper: lint, UART testbench, host co-simulation, bitstreams
 #   make fpga-gl   FPGA wrapper on post-synthesis netlists (slow, ~10 min)
 #   make asic      sky130 synthesis + proof that the netlist equals the RTL
+#   make pcie      parallel engine + PCIe core: lint, equivalence vs the reference core
+#   make tapeout   Tiny Tapeout project: sources in sync, RTL test at both divisors
 
 IVERILOG    ?= iverilog
 VVP         ?= vvp
@@ -26,10 +28,10 @@ TB      := verification/tb_bit_accelerator.sv
 FORMAL  := formal/bit_address.mlw formal/bit_extract.mlw
 PROVE   := bit_accelerator/scripts/prove.sh
 
-.PHONY: all test lint sim sim-icarus sim-verilator formal spice accel gpu fpga fpga-gl asic clean
+.PHONY: all test lint sim sim-icarus sim-verilator formal spice accel gpu fpga fpga-gl asic pcie tapeout clean
 .DEFAULT_GOAL := test
 
-all test: lint sim formal spice accel gpu fpga asic
+all test: lint sim formal spice accel gpu fpga asic pcie tapeout
 
 lint:
 	$(VERILATOR) --lint-only -Wall $(RTL)
@@ -73,9 +75,17 @@ fpga-gl:
 asic:
 	$(MAKE) -C asic all
 
+pcie:
+	$(MAKE) -C pcie lint sim sim-verilator
+
+tapeout:
+	$(MAKE) -C tapeout check-sync test
+
 clean:
 	rm -rf $(BUILD) simv
 	$(MAKE) -C bit_accelerator clean
 	$(MAKE) -C fpga clean
 	$(MAKE) -C asic clean
+	$(MAKE) -C pcie clean
+	$(MAKE) -C tapeout clean
 	cd gpu && cargo clean
