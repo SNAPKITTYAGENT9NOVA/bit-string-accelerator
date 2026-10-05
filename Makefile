@@ -7,6 +7,9 @@
 #   make spice     ngspice timing model, fails if the delay is not measured
 #   make accel     the bit_accelerator/ v2 design (lint, sim, formal)
 #   make gpu       the Rust OpenCL crate in gpu/ (fmt, clippy, tests)
+#   make fpga      FPGA wrapper: lint, UART testbench, host co-simulation, bitstreams
+#   make fpga-gl   FPGA wrapper on post-synthesis netlists (slow, ~10 min)
+#   make asic      sky130 synthesis + proof that the netlist equals the RTL
 
 IVERILOG    ?= iverilog
 VVP         ?= vvp
@@ -23,10 +26,10 @@ TB      := verification/tb_bit_accelerator.sv
 FORMAL  := formal/bit_address.mlw formal/bit_extract.mlw
 PROVE   := bit_accelerator/scripts/prove.sh
 
-.PHONY: all test lint sim sim-icarus sim-verilator formal spice accel gpu clean
+.PHONY: all test lint sim sim-icarus sim-verilator formal spice accel gpu fpga fpga-gl asic clean
 .DEFAULT_GOAL := test
 
-all test: lint sim formal spice accel gpu
+all test: lint sim formal spice accel gpu fpga asic
 
 lint:
 	$(VERILATOR) --lint-only -Wall $(RTL)
@@ -61,7 +64,18 @@ gpu:
 	# Serial: PoCL 5.0 can abort when several contexts are released concurrently.
 	cd gpu && RUST_TEST_THREADS=1 cargo test
 
+fpga:
+	$(MAKE) -C fpga lint sim cosim icebreaker ulx3s
+
+fpga-gl:
+	$(MAKE) -C fpga gl-sim
+
+asic:
+	$(MAKE) -C asic all
+
 clean:
 	rm -rf $(BUILD) simv
 	$(MAKE) -C bit_accelerator clean
+	$(MAKE) -C fpga clean
+	$(MAKE) -C asic clean
 	cd gpu && cargo clean

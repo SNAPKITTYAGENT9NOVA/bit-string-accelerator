@@ -1,0 +1,11 @@
+# ABC mapping script: map to sky130 cells, then buffer high-fanout nets and
+# resize gates against the liberty timing (as OpenLane does before placement).
+strash
+dch
+map -B 0.9
+topo
+stime -c
+buffer -c -N 8
+upsize -c
+dnsize -c
+stime -p

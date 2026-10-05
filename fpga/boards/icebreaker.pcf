@@ -1,0 +1,7 @@
+# iCEBreaker v1.0 (iCE40UP5K-SG48). Pin numbers from the iCEBreaker examples.
+set_io -nowarn CLK    35
+set_io -nowarn BTN_N  10
+set_io -nowarn RX      6
+set_io -nowarn TX      9
+set_io -nowarn LEDR_N 11
+set_io -nowarn LEDG_N 37

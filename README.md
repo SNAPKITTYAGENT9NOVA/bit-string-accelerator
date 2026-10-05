@@ -17,6 +17,8 @@ evidence: [`docs/verification.md`](docs/verification.md).
 |------|----------|
 | `rtl/`, `verification/`, `formal/`, `isa/`, `spice/`, `docs/` | Compact accelerator, its self-checking testbench, Why3 proofs, ISA and timing model |
 | `bit_accelerator/` | Multi-stage v2 accelerator with its own testbench and proofs (also in `rust-opencl-gpu`) |
+| `fpga/` | Hardware build: UART + block-RAM wrapper, iCEBreaker and ULX3S bitstreams, host tool `bitacc` ([`fpga/README.md`](fpga/README.md)) |
+| `asic/` | sky130 standard-cell synthesis, equivalence proof, timing ([`asic/README.md`](asic/README.md)) |
 | `gpu/` | Rust/OpenCL (`ocl`) crate from `rust-opencl-gpu` |
 | `.github/workflows/ci.yml` | CI: lint, simulation, proofs, SPICE, Rust |
 
@@ -25,7 +27,8 @@ evidence: [`docs/verification.md`](docs/verification.md).
 Ubuntu 24.04:
 
 ```sh
-sudo apt-get install iverilog verilator why3 z3 ngspice pocl-opencl-icd ocl-icd-opencl-dev
+sudo apt-get install iverilog verilator why3 z3 ngspice pocl-opencl-icd ocl-icd-opencl-dev \
+  yosys nextpnr-ice40 nextpnr-ecp5 fpga-icestorm fpga-trellis
 why3 config detect
 ```
 
@@ -42,7 +45,22 @@ make formal        # Why3 proofs, every goal must be proved by Z3
 make spice         # ngspice timing model
 make accel         # bit_accelerator/ v2: lint, sim, proofs
 make gpu           # gpu/: cargo fmt, clippy, tests
+make fpga          # FPGA wrapper: lint, testbench, host co-simulation, both bitstreams
+make fpga-gl       # FPGA wrapper on post-synthesis netlists (slow)
+make asic          # sky130 synthesis + RTL/netlist equivalence proof
 ```
+
+## Running on hardware
+
+`make -C fpga icebreaker prog-icebreaker` (or `ulx3s prog-ulx3s`) builds and
+loads a bitstream. Then `bitacc --port /dev/ttyUSB1 selftest` runs the on-board
+acceptance test. See [`fpga/README.md`](fpga/README.md).
+
+| Target | Size | Speed |
+|---|---|---|
+| iCE40UP5K (iCEBreaker), core + UART + RAM | 1138 LC (21%), 4 BRAM | 39.06 MHz (12 MHz board clock) |
+| ECP5 25F (ULX3S), core + UART + RAM | 1171 LUT4 (4%), 2 BRAM | 73.22 MHz (25 MHz board clock) |
+| sky130 HD standard cells, core only | 1538 cells, 10,063 µm² | 500 MHz pre-layout, typical corner |
 
 GPU tests run serially (`RUST_TEST_THREADS=1`): PoCL 5.0 can abort with a
 `pocl_release_dlhandle_cache` assertion when several OpenCL contexts are released
@@ -53,7 +71,10 @@ from different threads at the same time. With one test thread it passed 40 of
 
 - BIT_TEST behaves like BIT_GET; there is no separate condition flag output.
 - `base_address << 3` drops the top 3 bits of `base_address` (64-bit wrap).
-- No synthesis has been run; the SPICE deck is an RC timing model, not extracted silicon.
+- The bitstreams have not been run on a physical board yet (no board was available); pin
+  assignments come from the boards' reference constraint files.
+- The sky130 numbers are pre-layout; no GDS has been produced. The SPICE deck is an RC
+  timing model, not extracted silicon.
 
 The Windows OpenCL SDK and `OpenCL.lib` from `rust-opencl-gpu` are not included
 here; the `ocl` crate locates the system OpenCL library.

@@ -77,3 +77,53 @@ jobs:
         env:
           RUST_TEST_THREADS: "1"
       - run: cargo run --quiet
+
+  fpga:
+    name: FPGA build (lint, UART testbench, host co-simulation, bitstreams)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install FPGA toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends iverilog verilator yosys \
+            nextpnr-ice40 nextpnr-ecp5 fpga-icestorm fpga-trellis
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fpga/host
+      - run: make -C fpga lint sim host cosim icebreaker ulx3s
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bitstreams
+          path: |
+            fpga/build/icebreaker.bin
+            fpga/build/ulx3s.bit
+            fpga/build/*_pnr.log
+
+  fpga-gate-level:
+    name: FPGA gate-level simulation (${{ matrix.arch }})
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        arch: [ice40, ecp5]
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends iverilog yosys
+      - run: make -C fpga gl-sim-${{ matrix.arch }}
+
+  asic:
+    name: sky130 synthesis and equivalence
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends yosys
+      - run: make -C asic all
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sky130-netlist
+          path: |
+            asic/build/bit_accelerator_sky130.v
+            asic/build/area.rpt
