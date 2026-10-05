@@ -6,6 +6,9 @@
 //     generates (64-bit registers split most-significant word first);
 //   - DMA write buffers are streamed into the core's 128-bit input, result beats
 //     are collected into DMA_BUFFER_SIZE read buffers.
+// The DMA stand-in offers one descriptor per cycle and takes one result beat per
+// cycle, with no PCIe latency. At exit it reports the clock cycles the DMA
+// phases took (MOCK_REPORT_CYCLES), i.e. the engine's own throughput.
 // Only the subset of the library the host program uses is implemented.
 #include "Vbitacc_pcie_core.h"
 #include "verilated.h"
@@ -30,6 +33,8 @@ extern "C" {
 
 static Vbitacc_pcie_core *core;
 static uint64_t cycles;
+static uint64_t dma_cycles;                         // cycles spent in litepcie_dma_process
+static uint64_t dma_in, dma_out;                    // descriptors in, result beats out
 
 static uint32_t host_word;
 static uint64_t host_wdata;
@@ -69,6 +74,7 @@ extern "C" uint32_t litepcie_readl(int, uint32_t addr)
     case CSR_BITACC_CONFIG_ADDR:
         return (MOCK_LANES << CSR_BITACC_CONFIG_LANES_OFFSET)
              | (MOCK_WPL << CSR_BITACC_CONFIG_WORDS_PER_LANE_OFFSET);
+    case CSR_BITACC_VERSION_ADDR:        return 2;     // FORMAT_VERSION in bitacc_litefury.py
     default:
         fprintf(stderr, "mock: read of unmapped CSR 0x%x\n", addr);
         return 0xdeadbeef;
@@ -114,7 +120,13 @@ extern "C" int litepcie_dma_init(struct litepcie_dma_ctrl *dma, const char *, ui
     return 0;
 }
 
-extern "C" void litepcie_dma_cleanup(struct litepcie_dma_ctrl *) {}
+extern "C" void litepcie_dma_cleanup(struct litepcie_dma_ctrl *)
+{
+    if (dma_cycles)
+        fprintf(stderr, "mock: DMA phases %llu cycles, %llu descriptors in, %llu result beats out, "
+                "%.3f cycles/descriptor\n", (unsigned long long)dma_cycles,
+                (unsigned long long)dma_in, (unsigned long long)dma_out, (double)dma_cycles / (double)dma_in);
+}
 
 extern "C" void litepcie_dma_process(struct litepcie_dma_ctrl *dma)
 {
@@ -141,6 +153,9 @@ extern "C" void litepcie_dma_process(struct litepcie_dma_ctrl *dma)
                 for (int b = 0; b < 4; b++) beat[4*w + b] = (core->out_data[w] >> (8*b)) & 0xff;
         core->clk = 1; core->eval();
         cycles++;
+        dma_cycles++;
+        dma_in += in_fire;
+        dma_out += out_fire;
         if (in_fire) {
             in_pos += 16;
             if (in_pos == DMA_BUFFER_SIZE) { to_card.pop_front(); in_pos = 0; dma->reader_sw_count++; }

@@ -1,0 +1,176 @@
+(* Lane mapping of BULK in pcie/rtl/bitacc_engine.sv.
+
+   The bit store has L lanes; word w lives in lane (w mod L) at local address
+   (w div L). BULK pairs dst word D + k with src word S + k for k = 0 .. n-1,
+   L elements per step j. Per lane i the RTL computes, once per operation:
+
+     r i   = (i - S) mod L          src element offset   (RTL: LW'(i) - S[LW-1:0])
+     sa i  = (S + r i) div L        src local base       (RTL: sa)
+     q m   = (m - D) mod L          dst element offset   (RTL: q_off)
+     da m  = (D + q m) div L        dst local base       (RTL: da)
+     delta = (D - S) mod L          rotation             (RTL: r_delta)
+
+   In step j, lane i reads src local address j + sa i, which holds element
+   k = j*L + r i; dst lane m reads and writes local address j + da m, holding
+   element j*L + q m, and takes its src word from lane (m - delta) mod L.
+
+   Proved here, for every L > 0 (the RTL uses L = 2^LW, where LW-bit
+   subtraction is subtraction mod L, Part 1):
+   - lane i's src read is word S + k of lane i (Part 2);
+   - every element k >= 0 is read by exactly one lane, in step k div L (Part 2);
+   - the rotation delivers element k to the lane and local address of word
+     D + k, i.e. dst lane m and src lane (m - delta) mod L hold the same k
+     (Part 3).
+   Bounds (k < n, addresses inside the store) are checked by the RTL's kvalid
+   and the decode-time range checks, and tested in pcie/tb. *)
+
+module LaneMap
+  use int.Int
+  use int.EuclideanDivision
+
+  constant l : int
+  axiom l_pos : l > 0
+
+  (* Each lemma is a lemma function whose assertions name the quotient
+     witnesses, so that every step is linear arithmetic plus one instance of
+     the standard library's Div_mod, Div_unique, Div_mult or Mod_mult. *)
+
+  (* ---------------------------------------------------------------- Part 1: residues *)
+  let lemma mod_add_multiple (a t : int)
+    ensures { mod (a + t * l) l = mod a l }
+  = assert { a + t * l = l * t + a }
+
+  (* Linear step of rotation_pairs_elements, kept apart so that the prover
+     sees it without the residue lemmas in its context. *)
+  let lemma rotation_arith (m d s t e : int)
+    requires { d - s = l * t + e }
+    ensures { m - e + (- s) = (m - d) + t * l }
+  = ()
+
+  let lemma rotation_mod (m d s t e : int)
+    requires { d - s = l * t + e }
+    ensures { mod (m - e + (- s)) l = mod (m - d) l }
+  = rotation_arith m d s t e;
+    mod_add_multiple (m - d) t
+
+  let lemma div_add_multiple (a t : int)
+    ensures { div (a + t * l) l = div a l + t }
+  = assert { a + t * l = l * t + a }
+
+  let lemma mod_small (a : int)
+    requires { 0 <= a < l }
+    ensures { mod a l = a }
+  = assert { div a l = 0 };
+    assert { a = l * div a l + mod a l }
+
+  let lemma mod_sum_left (a b : int)
+    ensures { mod (mod a l + b) l = mod (a + b) l }
+  = assert { a = l * div a l + mod a l };
+    assert { a + b = (mod a l + b) + div a l * l };
+    mod_add_multiple (mod a l + b) (div a l)
+
+  let lemma mod_sum_right (a b : int)
+    ensures { mod (a + mod b l) l = mod (a + b) l }
+  = mod_sum_left b a;
+    assert { mod b l + a = a + mod b l /\ b + a = a + b }
+
+  (* LW-bit subtraction of residues (the RTL's r, q_off, r_delta) is the
+     residue of the difference when L = 2^LW. *)
+  let lemma mod_sub_residues (a b : int)
+    ensures { mod (mod a l - mod b l) l = mod (a - b) l }
+  = assert { a = l * div a l + mod a l };
+    assert { b = l * div b l + mod b l };
+    assert { a - b = (mod a l - mod b l) + (div a l - div b l) * l };
+    mod_add_multiple (mod a l - mod b l) (div a l - div b l)
+
+  (* ---------------------------------------------------------------- Part 2: src side *)
+  function r (s i : int) : int = mod (i - s) l
+  function sa (s i : int) : int = div (s + r s i) l
+  function k_src (s i j : int) : int = j * l + r s i
+
+  lemma r_bounds : forall s i : int. 0 <= r s i < l
+
+  (* Lane i's element of step j lives in lane i ... *)
+  let lemma src_lane (s i j : int)
+    requires { 0 <= i < l }
+    ensures { mod (s + k_src s i j) l = i }
+  = assert { i - s = l * div (i - s) l + r s i };
+    assert { s + k_src s i j = i + (j - div (i - s) l) * l };
+    mod_add_multiple i (j - div (i - s) l);
+    mod_small i
+
+  (* ... at local address j + sa i. *)
+  let lemma src_local (s i j : int)
+    ensures { div (s + k_src s i j) l = j + sa s i }
+  = assert { s + k_src s i j = (s + r s i) + j * l };
+    div_add_multiple (s + r s i) j
+
+  (* Every element k is the element of lane (s + k) mod L in step k div L ... *)
+  let lemma src_covers (s k : int)
+    ensures { k_src s (mod (s + k) l) (div k l) = k }
+  = mod_sum_left (s + k) (- s);
+    assert { s + k + (- s) = k };
+    assert { k = l * div k l + mod k l }
+
+  (* ... and of no other lane in that step. *)
+  let lemma src_unique (s i1 i2 j : int)
+    requires { 0 <= i1 < l /\ 0 <= i2 < l }
+    requires { k_src s i1 j = k_src s i2 j }
+    ensures { i1 = i2 }
+  = src_lane s i1 j;
+    src_lane s i2 j
+
+  (* The element of step j is in [j L, j L + L): different steps hold
+     different elements. *)
+  let lemma src_step (s i j : int)
+    ensures { div (k_src s i j) l = j }
+  = assert { j * l <= k_src s i j < j * l + l }
+
+  let lemma src_steps_disjoint (s i1 i2 j1 j2 : int)
+    requires { k_src s i1 j1 = k_src s i2 j2 }
+    ensures { j1 = j2 }
+  = src_step s i1 j1;
+    src_step s i2 j2
+
+  (* ---------------------------------------------------------------- Part 3: dst side, rotation *)
+  (* The dst offsets have the same form as the src offsets, with d for s. *)
+  function q (d m : int) : int = r d m
+  function da (d m : int) : int = sa d m
+  function k_dst (d m j : int) : int = k_src d m j
+  function delta (d s : int) : int = mod (d - s) l
+  function src_lane_for (d s m : int) : int = mod (m - delta d s) l
+
+  (* Dst lane m's element of step j is word d + k of lane m, at j + da m. *)
+  let lemma dst_lane (d m j : int)
+    requires { 0 <= m < l }
+    ensures { mod (d + k_dst d m j) l = m }
+  = src_lane d m j
+
+  let lemma dst_local (d m j : int)
+    ensures { div (d + k_dst d m j) l = j + da d m }
+  = src_local d m j
+
+  (* The src lane the rotation selects is a lane ... *)
+  lemma rotation_in_range :
+    forall d s m : int. 0 <= src_lane_for d s m < l
+
+  (* ... and it holds the same element k as dst lane m, in every step. *)
+  let lemma rotation_pairs_elements (d s m j : int)
+    ensures { k_src s (src_lane_for d s m) j = k_dst d m j }
+  = let t = div (d - s) l in
+    let e = delta d s in
+    assert { r s (src_lane_for d s m) = mod (mod (m - e) l + (- s)) l };
+    mod_sum_left (m - e) (- s);
+    assert { r s (src_lane_for d s m) = mod (m - e + (- s)) l };
+    assert { d - s = l * t + e };
+    rotation_mod m d s t e
+
+  (* Element k from src lane i goes to dst lane (i + delta) mod L. *)
+  let lemma rotation_target (d s i j : int)
+    requires { 0 <= i < l }
+    ensures { mod (d + k_src s i j) l = mod (i + delta d s) l }
+  = assert { i - s = l * div (i - s) l + r s i };
+    assert { d + k_src s i j = (i + (d - s)) + (j - div (i - s) l) * l };
+    mod_add_multiple (i + (d - s)) (j - div (i - s) l);
+    mod_sum_right i (d - s)
+end

@@ -22,6 +22,7 @@ for f in "$@"; do
   out=$(why3 prove "${loadpath[@]}" -a split_vc -P "$prover" -t "$timelimit" "$f" 2>&1) || true
   results=$(printf '%s\n' "$out" | awk '
     /^Goal / { goal = $2; sub(/\.$/, "", goal) }
+    /^Sub-goal / { kind = $2; goal = $0; sub(/.* of goal /, "", goal); sub(/\.$/, "", goal); goal = goal ":" kind }
     /Prover result is:/ { r = $0; sub(/.*Prover result is: /, "", r); print goal "\t" r }')
   if [ -z "$results" ]; then
     echo "ERROR $f: no goals reported"; printf '%s\n' "$out" | head -20; bad=$((bad + 1)); continue

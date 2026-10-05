@@ -25,7 +25,7 @@ OPS         ?= 2000
 
 RTL     := rtl/bit_accelerator.sv
 TB      := verification/tb_bit_accelerator.sv
-FORMAL  := formal/bit_address.mlw formal/bit_extract.mlw
+FORMAL  := formal/bit_address.mlw formal/bit_extract.mlw formal/lane_map.mlw
 PROVE   := bit_accelerator/scripts/prove.sh
 
 .PHONY: all test lint sim sim-icarus sim-verilator formal spice accel gpu fpga fpga-gl asic pcie tapeout clean
