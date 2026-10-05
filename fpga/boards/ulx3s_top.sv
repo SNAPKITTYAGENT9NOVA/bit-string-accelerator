@@ -1,4 +1,3 @@
-`timescale 1ns/1ps
 // ULX3S (Lattice ECP5 LFE5U-25F/45F/85F, 25 MHz). UART through the on-board FTDI
 // at 115200 baud. led[0]: last operation reported an error, led[1]: busy,
 // led[7]: heartbeat. btn[0] (PWR, active low) resets.

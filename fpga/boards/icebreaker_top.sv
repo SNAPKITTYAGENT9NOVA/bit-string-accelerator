@@ -1,4 +1,3 @@
-`timescale 1ns/1ps
 // iCEBreaker (Lattice iCE40UP5K-SG48, 12 MHz). UART on the FTDI second channel
 // at 115200 baud. Red LED: last operation reported an error. Green LED: heartbeat.
 module icebreaker_top (

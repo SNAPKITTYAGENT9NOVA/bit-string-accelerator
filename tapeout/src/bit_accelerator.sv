@@ -1,4 +1,3 @@
-`timescale 1ns/1ps
 // Bit-string accelerator: one GET/TEST/SET/CLEAR/TOGGLE per operation on a
 // 64-bit-word memory. See docs/verification.md for the interface contract.
 //

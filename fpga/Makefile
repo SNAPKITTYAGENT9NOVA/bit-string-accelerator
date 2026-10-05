@@ -41,7 +41,7 @@ sim-icarus: | $(BUILD)
 	$(VVP) -n $(BUILD)/tb_fpga.vvp
 
 sim-verilator: | $(BUILD)
-	$(VERILATOR) --binary --timing -Wno-fatal -Wno-lint --top-module tb_fpga_top \
+	$(VERILATOR) --binary --timing --timescale 1ns/1ps -Wno-fatal -Wno-lint --top-module tb_fpga_top \
 	  -Mdir $(BUILD)/verilator $(CORE) $(TB) >/dev/null
 	$(BUILD)/verilator/Vtb_fpga_top
 

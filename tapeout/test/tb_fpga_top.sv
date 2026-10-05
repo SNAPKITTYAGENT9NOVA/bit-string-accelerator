@@ -154,11 +154,18 @@ module tb_fpga_top;
     repeat (2) @(negedge clk);
     check(uart_tx === 1'b1, "tx high during reset");
     repeat (3) @(negedge clk);
-`else
-    // TX must idle high from power-up, before any reset edge (FPGA flip-flops
-    // power up low; a low line here is a start bit to the host).
+`elsif GATE_LEVEL
+    // FPGA netlist: flip-flops power up low (the cell models encode this), so TX
+    // must idle high from power-up, before any reset edge; a low line here is a
+    // start bit, i.e. a junk byte, to the host.
     #1 check(uart_tx === 1'b1, "tx idle-high at power-up");
     repeat (5) @(negedge clk);
+`else
+    // RTL has no power-up value (X); TX must be high while in reset. The
+    // power-up property is checked on the gate-level netlists.
+    repeat (2) @(negedge clk);
+    check(uart_tx === 1'b1, "tx high during reset");
+    repeat (3) @(negedge clk);
 `endif
     reset = 1'b0;
     repeat (5) @(negedge clk);

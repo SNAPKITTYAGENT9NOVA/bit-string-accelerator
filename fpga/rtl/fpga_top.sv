@@ -1,4 +1,3 @@
-`timescale 1ns/1ps
 // Board-independent hardware top: bit_accelerator + 256 x 64-bit block RAM,
 // controlled over a UART (8N1). All multi-byte fields are little-endian.
 //

@@ -43,7 +43,7 @@ sim-icarus:
 
 sim-verilator:
 	mkdir -p $(BUILD)/verilator
-	$(VERILATOR) --binary --timing -Wno-fatal -Wno-lint --top-module tb_bit_accelerator \
+	$(VERILATOR) --binary --timing --timescale 1ns/1ps -Wno-fatal -Wno-lint --top-module tb_bit_accelerator \
 	  -Mdir $(BUILD)/verilator $(RTL) $(TB) >/dev/null
 	$(BUILD)/verilator/Vtb_bit_accelerator +seed=$(SEED) +ops=$(OPS)
 

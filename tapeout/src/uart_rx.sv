@@ -1,4 +1,3 @@
-`timescale 1ns/1ps
 // 8N1 UART receiver. cpb = clocks per bit = clock frequency / baud rate (>= 4).
 // valid pulses for one cycle with the received byte in data.
 module uart_rx #(

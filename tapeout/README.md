@@ -8,7 +8,7 @@ of the submission repository unchanged.
 | | |
 |---|---|
 | Top module | `tt_um_snapkittyagent9nova_bitacc` |
-| Size | 1×2 tiles |
+| Size | 2×2 tiles |
 | Design | `bit_accelerator` core + 4 × 64-bit RAM + UART (`src/`) |
 | Datasheet | [`docs/info.md`](docs/info.md) |
 | Flow | LibreLane 3.0.14 + tt-support-tools, the versions `tt-gds-action@ttsky26d` uses |
@@ -60,7 +60,7 @@ area, so these steps are yours:
    directory and push. Enable GitHub Pages (Settings → Pages → GitHub Actions).
 2. Check that the `gds`, `test` and `docs` actions pass. `gds` runs hardening,
    precheck and the gate-level test on GitHub's runners.
-3. Buy 2 tiles on the ttsky26d shuttle at <https://app.tinytapeout.com> and
+3. Buy a 2×2 slot (4 tiles) on the ttsky26d shuttle at <https://app.tinytapeout.com> and
    submit the repository there before the shuttle's deadline.
 4. When the chips arrive, test the design with a USB-UART adapter on
    `ui[3]`/`uo[4]` and `bitacc --words 4 selftest`. See `docs/info.md`.

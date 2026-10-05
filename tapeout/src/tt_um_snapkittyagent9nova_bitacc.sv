@@ -1,4 +1,3 @@
-`timescale 1ns/1ps
 // Tiny Tapeout top: bit_accelerator + 4 x 64-bit words of RAM, driven over a
 // UART with the same protocol as fpga/rtl/fpga_top.sv (see fpga/README.md):
 //
