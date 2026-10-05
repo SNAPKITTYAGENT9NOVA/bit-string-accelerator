@@ -6,6 +6,8 @@
 //!   bitacc --port /dev/ttyUSB1 exec <get|test|set|clear|toggle|0..7> <base> <offset>
 //!   bitacc --port /dev/ttyUSB1 selftest [operations] [seed]
 //!
+//! Options: --baud N (default 115200), --words N (RAM size: 256 for the FPGA
+//! build, 4 for the Tiny Tapeout chip).
 //! Numbers are decimal or 0x-prefixed hex. The port is configured with `stty`
 //! (115200 8N1 raw, 1 s read timeout); Linux and macOS.
 
@@ -127,12 +129,12 @@ fn opcode(s: &str) -> Result<u8, String> {
     }
 }
 
-fn index(s: &str) -> Result<u8, String> {
+fn index(s: &str, words: usize) -> Result<u8, String> {
     let n = num(s)?;
     u8::try_from(n)
         .ok()
-        .filter(|&i| (i as usize) < WORDS)
-        .ok_or_else(|| format!("index must be 0..{}: {s}", WORDS - 1))
+        .filter(|&i| (i as usize) < words)
+        .ok_or_else(|| format!("index must be 0..{}: {s}", words - 1))
 }
 
 struct Rng(u64);
@@ -147,9 +149,9 @@ impl Rng {
 
 /// Fill the RAM, run random operations, and compare every status and the final
 /// RAM contents against the host model. This is the on-hardware acceptance test.
-fn selftest(port: &mut Port, ops: u64, seed: u64) -> Result<(), String> {
+fn selftest(port: &mut Port, words: usize, ops: u64, seed: u64) -> Result<(), String> {
     let mut rng = Rng(seed.max(1));
-    let mut ram = [0u64; WORDS];
+    let mut ram = vec![0u64; words];
     port.ping()?;
     for (i, w) in ram.iter_mut().enumerate() {
         *w = rng.next();
@@ -165,7 +167,10 @@ fn selftest(port: &mut Port, ops: u64, seed: u64) -> Result<(), String> {
         let (base, offset) = if r % 10 == 0 {
             (rng.next(), rng.next()) // mostly out of range: exercises faults
         } else {
-            (rng.next() % (WORDS as u64 * 8), rng.next() % 4096)
+            (
+                rng.next() % (words as u64 * 8),
+                rng.next() % (words as u64 * 64),
+            )
         };
         let want = model_exec(&mut ram, op, base, offset);
         let got = port.exec(op, base, offset)?;
@@ -183,7 +188,7 @@ fn selftest(port: &mut Port, ops: u64, seed: u64) -> Result<(), String> {
             eprintln!("word {i}: got {got:#018x}, expected {w:#018x}");
         }
     }
-    println!("selftest: {ops} operations, {WORDS} words checked, {mismatches} mismatches");
+    println!("selftest: {ops} operations, {words} words checked, {mismatches} mismatches");
     if mismatches == 0 {
         Ok(())
     } else {
@@ -194,18 +199,25 @@ fn selftest(port: &mut Port, ops: u64, seed: u64) -> Result<(), String> {
 fn run(args: &[String]) -> Result<(), String> {
     let mut port_path = None;
     let mut baud = 115_200u32;
+    let mut words = WORDS;
     let mut rest = Vec::new();
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
             "--port" => port_path = it.next().cloned(),
             "--baud" => baud = num(it.next().ok_or("--baud needs a value")?)? as u32,
+            "--words" => {
+                words = num(it.next().ok_or("--words needs a value")?)? as usize;
+                if !(1..=256).contains(&words) {
+                    return Err("--words must be 1..256".into());
+                }
+            }
             "-h" | "--help" => {
                 println!(
                     "{}",
                     include_str!("main.rs")
                         .lines()
-                        .take(10)
+                        .take(13)
                         .map(|l| l.trim_start_matches("//!"))
                         .collect::<Vec<_>>()
                         .join("\n")
@@ -222,8 +234,8 @@ fn run(args: &[String]) -> Result<(), String> {
             port.ping()?;
             println!("pong");
         }
-        ["write", i, v] => port.write_word(index(i)?, num(v)?)?,
-        ["read", i] => println!("{:#018x}", port.read_word(index(i)?)?),
+        ["write", i, v] => port.write_word(index(i, words)?, num(v)?)?,
+        ["read", i] => println!("{:#018x}", port.read_word(index(i, words)?)?),
         ["exec", op, base, offset] => {
             let s = port.exec(opcode(op)?, num(base)?, num(offset)?)?;
             if s.error {
@@ -232,9 +244,9 @@ fn run(args: &[String]) -> Result<(), String> {
                 println!("{}", s.bit as u8);
             }
         }
-        ["selftest"] => selftest(&mut port, 1000, 1)?,
-        ["selftest", n] => selftest(&mut port, num(n)?, 1)?,
-        ["selftest", n, seed] => selftest(&mut port, num(n)?, num(seed)?)?,
+        ["selftest"] => selftest(&mut port, words, 1000, 1)?,
+        ["selftest", n] => selftest(&mut port, words, num(n)?, 1)?,
+        ["selftest", n, seed] => selftest(&mut port, words, num(n)?, num(seed)?)?,
         _ => return Err("unknown command; see --help".into()),
     }
     Ok(())
@@ -263,7 +275,9 @@ mod tests {
         assert_eq!(opcode("set").unwrap(), 2);
         assert_eq!(opcode("7").unwrap(), 7);
         assert!(opcode("8").is_err());
-        assert_eq!(index("255").unwrap(), 255);
-        assert!(index("256").is_err());
+        assert_eq!(index("255", 256).unwrap(), 255);
+        assert!(index("256", 256).is_err());
+        assert_eq!(index("3", 4).unwrap(), 3);
+        assert!(index("4", 4).is_err());
     }
 }

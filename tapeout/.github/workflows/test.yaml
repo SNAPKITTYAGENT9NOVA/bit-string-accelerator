@@ -1,0 +1,34 @@
+name: test
+on: [push, workflow_dispatch]
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Install iverilog
+        shell: bash
+        run: sudo apt-get update && sudo apt-get install -y iverilog
+
+      # The testbench is plain SystemVerilog (no cocotb); test/Makefile writes
+      # results.xml and exits non-zero on any failure.
+      - name: Run tests (divisor pins d=2, then default divisor)
+        run: |
+          cd test
+          make clean
+          make
+          ! grep -E '<(failure|error)' results.xml
+          make TB_DEFINES=-DTT_DEFAULT_BAUD
+          ! grep -E '<(failure|error)' results.xml
+
+      - name: upload test results
+        if: success() || failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-results
+          path: |
+            test/results.xml
+            test/sim_build/*/sim.log

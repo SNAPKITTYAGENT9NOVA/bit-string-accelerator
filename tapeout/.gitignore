@@ -1,0 +1,11 @@
+.DS_Store
+*.vcd
+*.fst
+runs
+tt
+tt_submission
+src/user_config.json
+src/config_merged.json
+test/sim_build
+test/results.xml
+test/gate_level_netlist.v
