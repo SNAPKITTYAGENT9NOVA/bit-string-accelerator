@@ -40,7 +40,7 @@ actually occurred. Results:
 
 | Check | Result |
 |---|---|
-| Engine, 2×4, 4×16, 8×16, 8×512 lanes × words, seeds 1 and 7 (Icarus) | 0 mismatches; 333–611 out-of-order completions per 4,000 operations |
+| Engine, 2×4, 4×16, 8×16, 8×512 lanes × words, seeds 1 and 7 (Icarus) | 0 mismatches; 993–1,307 out-of-order completions per 4,000 operations |
 | Engine under Verilator | 0 mismatches |
 | PCIe core, 3,200 descriptors (Icarus) | 9,250 checks, 0 failures |
 | Host program against the Verilated core (`make cosim`) | 200,000 + 50,000 operations, 0 mismatches |
