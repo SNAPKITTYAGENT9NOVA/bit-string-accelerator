@@ -1,9 +1,50 @@
-theory BitExtract
-  use int.Int
-  function mask (i:int) : int = 2 ^ i
-  function extract (word i:int) : int = mod (div word (mask i)) 2
-  lemma extract_is_bit:
-    forall word i:int. 0 <= word -> 0 <= i < 64 ->
-      0 <= extract word i <= 1
-  = by omega
+(* Single-bit read and read-modify-write semantics of rtl/bit_accelerator.sv,
+   stated over 64-bit words. k is the bit index (bit_idx_q), k < 64. *)
+
+module BitExtract
+  use bv.BV64
+
+  function one_hot (k : t) : t = lsl_bv one k       (* shifted_one *)
+  function op_set    (w k : t) : t = bw_or  w (one_hot k)
+  function op_clear  (w k : t) : t = bw_and w (bw_not (one_hot k))
+  function op_toggle (w k : t) : t = bw_xor w (one_hot k)
+
+  (* GET/TEST: mem_rdata[k] is the k-th bit of the word. *)
+  lemma get_is_bit :
+    forall w k : t. ult k (64 : t) ->
+      (nth_bv w k <-> bw_and (lsr_bv w k) one = one)
+
+  lemma one_hot_single_bit :
+    forall k j : t. ult k (64 : t) -> ult j (64 : t) ->
+      (nth_bv (one_hot k) j <-> j = k)
+
+  (* SET makes bit k one and leaves every other bit unchanged. *)
+  lemma set_target :
+    forall w k : t. ult k (64 : t) -> nth_bv (op_set w k) k
+  lemma set_frame :
+    forall w k j : t. ult k (64 : t) -> ult j (64 : t) -> j <> k ->
+      (nth_bv (op_set w k) j <-> nth_bv w j)
+
+  (* CLEAR makes bit k zero and leaves every other bit unchanged. *)
+  lemma clear_target :
+    forall w k : t. ult k (64 : t) -> not (nth_bv (op_clear w k) k)
+  lemma clear_frame :
+    forall w k j : t. ult k (64 : t) -> ult j (64 : t) -> j <> k ->
+      (nth_bv (op_clear w k) j <-> nth_bv w j)
+
+  (* TOGGLE inverts bit k and leaves every other bit unchanged. *)
+  lemma toggle_target :
+    forall w k : t. ult k (64 : t) ->
+      (nth_bv (op_toggle w k) k <-> not (nth_bv w k))
+  lemma toggle_frame :
+    forall w k j : t. ult k (64 : t) -> ult j (64 : t) -> j <> k ->
+      (nth_bv (op_toggle w k) j <-> nth_bv w j)
+
+  (* Algebraic laws. *)
+  lemma set_idempotent :
+    forall w k : t. ult k (64 : t) -> op_set (op_set w k) k = op_set w k
+  lemma clear_idempotent :
+    forall w k : t. ult k (64 : t) -> op_clear (op_clear w k) k = op_clear w k
+  lemma toggle_involution :
+    forall w k : t. ult k (64 : t) -> op_toggle (op_toggle w k) k = w
 end

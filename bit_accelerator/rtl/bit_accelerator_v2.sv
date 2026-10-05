@@ -61,22 +61,19 @@ module bit_accelerator_v2 #(
   // ===== Data Path =====
   logic [63:0] read_word;
   logic [63:0] modified_word;
-  logic [63:0] result_data;
+  logic        result_data;
 
   // ===== Address Calculation (Combinational) =====
   assign absolute_bit_address = (base_addr_reg << 3) + bit_offset_reg;
   assign word_address = absolute_bit_address[63:6];
   assign bit_index_in_word = absolute_bit_address[5:0];
-  assign mem_addr = {word_address, 3'b000};  // Convert word address to byte address
+  assign mem_addr = ADDR_WIDTH'({word_address, 3'b000});  // word address -> byte address (zero-extended)
 
   // Check if operation is a modify operation
   assign is_modify_op = (operation_reg == 3'b010) ||  // SET
                         (operation_reg == 3'b011) ||  // CLEAR
                         (operation_reg == 3'b100);    // TOGGLE
 
-  // ===== Bit Extraction =====
-  logic [63:0] shifted_word;
-  assign shifted_word = read_word >> bit_index_in_word;
 
   // ===== Bit Modification =====
   always_comb begin
@@ -89,11 +86,11 @@ module bit_accelerator_v2 #(
   end
 
   // ===== Result Extraction =====
-  assign result_data = shifted_word & 64'h1;
+  assign result_data = read_word[bit_index_in_word];  // bit extraction
 
   // Result is a one-cycle pulse, combinational from ST_RESULT
   assign result_valid = (current_state == ST_RESULT);
-  assign result_bit   = (current_state == ST_RESULT) ? result_data[0] : 1'b0;
+  assign result_bit   = (current_state == ST_RESULT) ? result_data : 1'b0;
 
   // ===== State Machine: Sequential =====
   always_ff @(posedge clk) begin

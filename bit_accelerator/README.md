@@ -28,92 +28,108 @@ result (0 or 1)
 - **BIT_CLEAR** (0b011): Clear single bit to 0 (read-modify-write)
 - **BIT_TOGGLE** (0b100): Toggle single bit (read-modify-write)
 
-## Memory Interface
+## Design versions
 
-### Signals
+| Version | Files | Status |
+|---------|-------|--------|
+| **v2** | `rtl/bit_accelerator_v2.sv` | Verified design. Lint-clean (`verilator -Wall`), 182 testbench checks pass under Verilator and Icarus. |
+| v1 | `rtl/bit_accelerator.sv` + submodules | Reference only, not built. `result_valid`/`result_bit` are driven from two processes, and its testbench does not compile. |
 
-```verilog
+## Interface (v2)
+
+```systemverilog
 // Operation interface
-input  logic [63:0]  base_address;    // Byte address
-input  logic [63:0]  bit_offset;      // Bit offset from base
-input  logic [2:0]   operation;       // Operation selector
-output logic         result_bit;      // Result (0 or 1)
-
-// Memory interface (AXI-like)
-output logic [63:0]  mem_addr;        // Word-aligned byte address
-output logic         mem_read;        // Read request
-output logic         mem_write;       // Write request
-input  logic [63:0]  mem_rdata;       // Read response data
-input  logic         mem_rvalid;      // Read response valid
+input  logic        op_valid;       output logic op_ready;
+input  logic [63:0] base_address;   // byte address
+input  logic [63:0] bit_offset;     // bit offset from base
+input  logic [2:0]  operation;      // 000 GET, 001 TEST, 010 SET, 011 CLEAR, 100 TOGGLE
+output logic        result_valid;   // one-cycle pulse
+output logic        result_bit;     // valid with result_valid
+output logic        error;          // set by a read fault, valid with result_valid,
+                                    // held until the next operation is accepted
+// Memory interface (valid/ready)
+output logic        mem_valid, mem_write;
+output logic [63:0] mem_addr;       // 8-byte-aligned byte address
+output logic [63:0] mem_wdata;      output logic [7:0] mem_wstrb;
+input  logic        mem_ready, mem_rvalid, mem_fault;
+input  logic [63:0] mem_rdata;
 ```
 
-### Address Calculation
+Opcodes 101-111 are undefined; v2 executes them as a read with no write.
+Write faults are not modelled.
+
+### Address calculation
 
 ```
-absolute_bit = (base_address × 8) + bit_offset
+absolute_bit = (base_address * 8) + bit_offset    (mod 2^64)
 word_address = absolute_bit / 64
 bit_index    = absolute_bit mod 64
-
-result = (memory[word_address] >> bit_index) & 1
+result       = (memory[word_address] >> bit_index) & 1
 ```
 
-## Directory Structure
+## Directory structure
 
 ```
 bit_accelerator/
-├── rtl/
-│   ├── bit_accelerator.sv        # Top-level accelerator
-│   ├── bit_address_generator.sv  # Address computation
-│   ├── bit_extractor.sv          # Single/multi-bit extraction
-│   ├── bit_modifier.sv           # Bit modification (SET/CLEAR/TOGGLE)
-│   ├── behavioral_memory.sv      # Memory model for simulation
-│   └── bit_accelerator_pkg.sv    # Package definitions
-│
-├── testbenches/
-│   └── tb_bit_accelerator.sv     # Functional verification testbench
-│
-├── formal/
-│   ├── bit_addressing.why3       # Formal specification
-│   └── bit_addressing_proofs.why3 # Machine-verified proofs
-│
-├── docs/
-│   ├── DATAPATH.md               # Detailed datapath architecture
-│   └── ISA.md                    # Instruction set specification
-│
-├── Makefile                      # Build system
-└── README.md                     # This file
+├── rtl/bit_accelerator_v2.sv          # verified design
+├── rtl/*.sv                           # v1 (reference only)
+├── testbenches/tb_bit_accelerator_v2.sv
+├── formal/bit_addressing.mlw          # specification + lemmas (Why3)
+├── formal/bit_addressing_proofs.mlw   # derived lemmas
+├── scripts/prove.sh                   # proves every goal; fails unless all are Valid
+├── isa/BIT_ISA.md, docs/DATAPATH.md
+├── Makefile, build.sh, run_v2_sim.sh
+└── IMPLEMENTATION_REPORT.md           # measured results
 ```
 
-## Build and Verification
+## Build and verification
 
-### Prerequisites
+Prerequisites (Ubuntu 24.04): `apt-get install verilator iverilog why3 z3`, then `why3 config detect`.
 
 ```bash
-# Verilator (RTL simulation)
-apt-get install verilator
-
-# Why3 (formal verification)
-apt-get install why3
-why3 config --add-prover Alt-Ergo alt-ergo
+make test           # lint + Verilator + Icarus simulation + Why3 proofs
+make lint           # verilator --lint-only -Wall on v2
+make sim            # v2 testbench under both simulators
+make formal         # every Why3 goal must be proved by Z3
+make formal-cvc4    # informational cross-check with CVC4
+./build.sh          # same as make test, fails if a tool is missing
 ```
 
-### Full Verification Workflow
+## Formal verification
 
-```bash
-# Run complete build, simulation, and formal verification
-make all
+`formal/` is checked by Why3 1.6 with Z3 4.8.12: **33/33 goals valid**, no
+axioms beyond the Why3 standard library. The lemmas cover:
 
-# Or individual steps:
-make rtl      # RTL syntax check
-make sim      # Compile and simulate
-make test     # Run functional tests
-make formal   # Formal verification
-make clean    # Clean artifacts
-```
+1. Address decomposition: `addr = word * 64 + bit`, `0 <= bit < 64`, and (word, bit) determines the address.
+2. Boundaries: offset 64 reaches the next word; offsets 0-63 stay in one word **when the base is word-aligned** (`base mod 8 = 0`).
+3. Bit operations: GET returns 0 or 1 and is deterministic; GET after SET/CLEAR returns 1/0.
+4. Non-interference: SET or CLEAR on one word does not change a GET from another word.
 
-## Hardware Specifications
+An earlier draft of these files was not valid Why3 and stated three theorems
+that are false (`bit_63_same_word`, `bit_index_wraps_at_64` without the
+alignment condition, and `within_word_uniqueness`). Z3 proves their negations;
+they were corrected.
 
-### Pipeline Depth
+The proofs are about the specification. Agreement between the specification
+and the RTL is checked by simulation, not proved.
+
+## Testing
+
+`tb_bit_accelerator_v2.sv` is cycle-accurate and self-checking (exits non-zero
+on any failure). It checks:
+
+- GET results (set and clear bits, offset 64, non-zero base) and exact cycle timing
+- SET/CLEAR/TOGGLE memory contents, including cross-word offsets
+- one `result_valid` pulse per operation; `op_ready` low while busy
+- read and write backpressure: request and data held stable, write committed once
+- reset in each of READ_REQUEST, READ_WAIT, MODIFY, WRITE_REQUEST, WRITE_WAIT
+- read faults on GET/SET/TOGGLE: `error` in the result cycle, no write, cleared by the next op
+- undefined opcodes: no write
+
+## Hardware estimates
+
+The figures below are design targets, **not measured**: no synthesis,
+place-and-route or power analysis has been run.
 
 | Scenario | Latency |
 |----------|---------|
@@ -121,63 +137,7 @@ make clean    # Clean artifacts
 | L2 cache miss | 10-15 cycles |
 | Memory miss | 50+ cycles |
 
-### Area & Power
-
-- **Gate count**: ~50k gates (7nm technology)
-- **Area**: ~0.6 mm²
-- **Power**: ~2.5 mW (active)
-- **Frequency**: 1+ GHz
-
-### Memory System Integration
-
-- L1 cache integration via existing load/store queue
-- TLB lookups for virtual-to-physical translation
-- Coherency with processor's cache protocol
-- Support for page boundaries with transparent handling
-
-## Formal Verification
-
-The accelerator includes machine-checkable proofs for:
-
-1. **Address Correctness**
-   - Proper bit-to-word address translation
-   - Correct modulo and division operations
-
-2. **Extraction Correctness**
-   - Correct bit selection from word
-   - Result is always 0 or 1 (binary)
-
-3. **Modification Correctness**
-   - SET operation sets target bit to 1
-   - CLEAR operation clears target bit to 0
-   - TOGGLE inverts target bit
-   - Non-target bits unchanged
-
-4. **Boundary Conditions**
-   - Bits 0-63 stay in same word
-   - Bit 64 crosses to next word
-   - Arbitrary offsets handled correctly
-
-### Proof Status
-
-All theorems are **fully machine-verified** using Why3 and Alt-Ergo:
-
-- ✓ 12 core theorems proven
-- ✓ 0 unproven axioms
-- ✓ 0 `sorry` or `admit` statements
-- ✓ 100% formal coverage
-
-## Testing
-
-The testbench verifies:
-
-✓ Single-word bit extraction (all 64 bit positions)
-✓ Cross-word boundary handling (bits 63-65)
-✓ Non-zero base addresses
-✓ BIT_SET/CLEAR/TOGGLE operations
-✓ Read-modify-write atomicity
-✓ Memory interface handshaking
-✓ Variable read latency handling
+- Gate count ~50k (7nm), area ~0.6 mm², power ~2.5 mW active, 1+ GHz
 
 ## Performance Comparison
 

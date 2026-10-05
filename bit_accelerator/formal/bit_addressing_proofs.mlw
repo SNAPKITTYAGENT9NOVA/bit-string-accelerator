@@ -1,0 +1,45 @@
+(* Derived properties of BitAddressing, proved from the definitions in
+   bit_addressing.mlw (run with `why3 prove -L formal ...`). *)
+
+module BitAddressingProofs
+
+  use int.Int
+  use int.EuclideanDivision
+  use bit_addressing.BitAddressing
+
+  (* Every valid bit address has a valid word and an in-range bit index. *)
+  lemma valid_address_decomposes :
+    forall a : int. is_valid_bit_address a ->
+      0 <= word_index a < max_address /\ 0 <= bit_index_in_word a < 64 /\
+      a = word_index a * 64 + bit_index_in_word a
+
+  (* The 64 offsets from a word-aligned base cover exactly one word, in order. *)
+  lemma aligned_base_covers_one_word :
+    forall base k : int. mod base 8 = 0 -> 0 <= k < 64 ->
+      word_index (absolute_bit_address base k) = div base 8 /\
+      bit_index_in_word (absolute_bit_address base k) = k
+
+  (* Offset k + 64 reaches the same bit of the next word. *)
+  lemma offset_plus_64 :
+    forall base k : int.
+      word_index (absolute_bit_address base (k + 64)) =
+        word_index (absolute_bit_address base k) + 1 /\
+      bit_index_in_word (absolute_bit_address base (k + 64)) =
+        bit_index_in_word (absolute_bit_address base k)
+
+  (* Offsets are interchangeable with base bytes: 8 bits per byte. *)
+  lemma byte_offset_equivalence :
+    forall base offset : int.
+      absolute_bit_address (base + 1) offset = absolute_bit_address base (offset + 8)
+
+  (* A CLEAR to one word does not change a GET from a different word. *)
+  let lemma clear_disjoint_words_independent (old_mem new_mem : int -> int)
+                                            (base1 offset1 base2 offset2 r : int)
+    requires { word_index (absolute_bit_address base1 offset1) <>
+               word_index (absolute_bit_address base2 offset2) }
+    requires { bit_clear_correct old_mem new_mem base1 offset1 }
+    requires { bit_get_correct new_mem base2 offset2 r }
+    ensures  { bit_get_correct old_mem base2 offset2 r }
+  = let a2 = absolute_bit_address base2 offset2 in
+    assert { new_mem (word_index a2) = old_mem (word_index a2) }
+end

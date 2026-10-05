@@ -6,7 +6,8 @@ use gpu::functor::{Add, Expr, GpuContext, GpuError, Negate, UnaryOp};
 const SENTINEL: u8 = 0xAA;
 
 fn ctx() -> GpuContext {
-    GpuContext::new().expect("OpenCL context creation / kernel compilation failed (no usable OpenCL device?)")
+    GpuContext::new()
+        .expect("OpenCL context creation / kernel compilation failed (no usable OpenCL device?)")
 }
 
 fn ctx_local(n: usize) -> GpuContext {
@@ -45,8 +46,16 @@ fn device_is_reported() {
 #[test]
 fn scalar_laws_on_device() {
     let c = ctx();
-    assert_eq!(Negate.run_bools(&c, &[true]).unwrap(), vec![false], "¬true = false");
-    assert_eq!(Negate.run_bools(&c, &[false]).unwrap(), vec![true], "¬false = true");
+    assert_eq!(
+        Negate.run_bools(&c, &[true]).unwrap(),
+        vec![false],
+        "¬true = false"
+    );
+    assert_eq!(
+        Negate.run_bools(&c, &[false]).unwrap(),
+        vec![true],
+        "¬false = true"
+    );
     assert!(!Negate::denote(true));
     assert!(Negate::denote(false));
     for x in [true, false] {
@@ -120,7 +129,10 @@ fn involution_two_gpu_launches_with_temporary() {
 
         let out_raw = c.download_raw(&out).unwrap();
         let want: Vec<u8> = input.iter().map(|&b| b as u8).collect();
-        assert_eq!(out_raw, want, "output == input after two negations, n = {n}");
+        assert_eq!(
+            out_raw, want,
+            "output == input after two negations, n = {n}"
+        );
     }
 }
 
@@ -130,9 +142,17 @@ fn involution_via_compose_and_expr() {
     let mut rng = Rng(4242);
     for &n in &[1usize, 17, 65, 1000, 4096] {
         let input = rng.bools(n);
-        assert_eq!(Negate.then(Negate).run_bools(&c, &input).unwrap(), input, "Compose n={n}");
         assert_eq!(
-            Negate.then(Negate).then(Negate).run_bools(&c, &input).unwrap(),
+            Negate.then(Negate).run_bools(&c, &input).unwrap(),
+            input,
+            "Compose n={n}"
+        );
+        assert_eq!(
+            Negate
+                .then(Negate)
+                .then(Negate)
+                .run_bools(&c, &input)
+                .unwrap(),
             expected_not(&input),
             "¬¬¬x = ¬x, n={n}"
         );
@@ -154,26 +174,70 @@ fn negate_does_not_mutate_input() {
         let out = c.alloc(n).unwrap();
 
         Negate.launch(&c, &inp, &out, n).unwrap();
-        assert_eq!(c.download_raw(&inp).unwrap(), raw, "input unchanged after Negate, n={n}");
+        assert_eq!(
+            c.download_raw(&inp).unwrap(),
+            raw,
+            "input unchanged after Negate, n={n}"
+        );
 
         Negate.then(Negate).launch(&c, &inp, &out, n).unwrap();
-        assert_eq!(c.download_raw(&inp).unwrap(), raw, "input unchanged after Compose, n={n}");
+        assert_eq!(
+            c.download_raw(&inp).unwrap(),
+            raw,
+            "input unchanged after Compose, n={n}"
+        );
 
         let e = Expr::negate(Expr::input(0));
         e.eval(&c, &[&inp], n).unwrap();
-        assert_eq!(c.download_raw(&inp).unwrap(), raw, "input unchanged after Expr, n={n}");
+        assert_eq!(
+            c.download_raw(&inp).unwrap(),
+            raw,
+            "input unchanged after Expr, n={n}"
+        );
     }
 }
 
 #[test]
 fn negate_of_add_matches_host_oracle() {
+    // Add is wrapping u8 addition, so true + true = 2, which Negate rejects as
+    // non-canonical. Where x and y are never both true, Negate(Add(x, y)) is NOR.
     let c = ctx();
     let mut rng = Rng(2024);
+    let expr = Expr::negate(Expr::add(Expr::input(0), Expr::input(1)));
     for &n in &[1usize, 7, 65, 1000, 4096] {
-        // Boolean inputs: Negate(Add(x, y)) is NOR.
         let x = rng.bools(n);
-        let _y = rng.bools(n);
-        let _bx = c.upload_bools(&x).unwrap();
+        let y: Vec<bool> = rng
+            .bools(n)
+            .iter()
+            .zip(&x)
+            .map(|(&b, &a)| b && !a)
+            .collect();
+        let (bx, by) = (c.upload_bools(&x).unwrap(), c.upload_bools(&y).unwrap());
+        let out = expr.eval(&c, &[&bx, &by], n).unwrap();
+        let want: Vec<bool> = x.iter().zip(&y).map(|(&a, &b)| !(a || b)).collect();
+        assert_eq!(c.download_bools(&out, n).unwrap(), want, "n = {n}");
+    }
+    // A position where both inputs are true yields 2 after Add; Negate must refuse it.
+    let both = c.upload_bools(&[false, true, false]).unwrap();
+    assert!(expr.eval(&c, &[&both, &both], 3).is_err());
+}
+
+#[test]
+fn negate_rejects_non_canonical_bytes() {
+    let c = ctx();
+    let mut rng = Rng(77);
+    for &n in &[1usize, 9, 300] {
+        let mut raw = rng.bytes(n);
+        // Guarantee at least one non-canonical byte.
+        raw[n / 2] |= 0x02;
+        let inp = c.upload_raw(&raw).unwrap();
+        let out = c.alloc_filled(n, SENTINEL).unwrap();
+        assert!(Negate.launch(&c, &inp, &out, n).is_err(), "n = {n}");
+        assert_eq!(
+            c.download_raw(&out).unwrap(),
+            vec![SENTINEL; n],
+            "output written on rejection"
+        );
     }
 }
 
@@ -185,7 +249,10 @@ fn expr_input_passthrough_and_missing_input() {
     let out = Expr::input(0).eval(&c, &[&inp], 3).unwrap();
     assert_eq!(c.download_bools(&out, 3).unwrap(), input);
     match Expr::input(1).eval(&c, &[&inp], 3) {
-        Err(GpuError::MissingInput { index: 1, supplied: 1 }) => {}
+        Err(GpuError::MissingInput {
+            index: 1,
+            supplied: 1,
+        }) => {}
         other => panic!("expected MissingInput, got {:?}", other.map(|_| ())),
     }
 }
@@ -227,12 +294,23 @@ fn boundary_guard_no_write_past_count() {
 
             let got = c.download_raw(&out).unwrap();
             for i in 0..count {
-                assert_eq!(got[i], (raw[i] == 0) as u8, "local={l} count={count} i={i} (stale or wrong)");
+                assert_eq!(
+                    got[i],
+                    (raw[i] == 0) as u8,
+                    "local={l} count={count} i={i} (stale or wrong)"
+                );
             }
-            for i in count..len {
-                assert_eq!(got[i], SENTINEL, "OOB write at i={i}, local={l} count={count}");
+            for (i, &byte) in got.iter().enumerate().take(len).skip(count) {
+                assert_eq!(
+                    byte, SENTINEL,
+                    "OOB write at i={i}, local={l} count={count}"
+                );
             }
-            assert_eq!(c.download_raw(&inp).unwrap(), raw, "input mutated, local={l} count={count}");
+            assert_eq!(
+                c.download_raw(&inp).unwrap(),
+                raw,
+                "input mutated, local={l} count={count}"
+            );
         }
     }
 }
@@ -248,7 +326,10 @@ fn boundary_guard_for_add_too() {
     Add.launch(&c, &a, &b, &out, count).unwrap();
     let got = c.download_raw(&out).unwrap();
     assert!(got[..count].iter().all(|&v| v == 3));
-    assert!(got[count..].iter().all(|&v| v == SENTINEL), "Add wrote past count");
+    assert!(
+        got[count..].iter().all(|&v| v == SENTINEL),
+        "Add wrote past count"
+    );
 }
 
 #[test]
@@ -258,12 +339,18 @@ fn stale_output_values_are_all_overwritten() {
         let inp = c.upload_bools(&vec![true; n]).unwrap();
         let out = c.alloc_filled(n, SENTINEL).unwrap();
         Negate.launch(&c, &inp, &out, n).unwrap();
-        assert!(c.download_raw(&out).unwrap().iter().all(|&v| v == 0), "stale value survived, n={n}");
+        assert!(
+            c.download_raw(&out).unwrap().iter().all(|&v| v == 0),
+            "stale value survived, n={n}"
+        );
 
         // Reuse the same output buffer for the opposite input: no stale 0s may remain.
         let inp2 = c.upload_bools(&vec![false; n]).unwrap();
         Negate.launch(&c, &inp2, &out, n).unwrap();
-        assert!(c.download_raw(&out).unwrap().iter().all(|&v| v == 1), "stale value survived on reuse, n={n}");
+        assert!(
+            c.download_raw(&out).unwrap().iter().all(|&v| v == 1),
+            "stale value survived on reuse, n={n}"
+        );
     }
 }
 
@@ -274,7 +361,10 @@ fn zero_count_is_noop_and_leaves_output_untouched() {
     let out = c.alloc_filled(4, SENTINEL).unwrap();
     Negate.launch(&c, &inp, &out, 0).unwrap();
     assert_eq!(c.download_raw(&out).unwrap(), vec![SENTINEL; 4]);
-    assert_eq!(Negate.then(Negate).run_bools(&c, &[]).unwrap(), Vec::<bool>::new());
+    assert_eq!(
+        Negate.then(Negate).run_bools(&c, &[]).unwrap(),
+        Vec::<bool>::new()
+    );
 }
 
 // ---------------- error handling ----------------
@@ -294,16 +384,28 @@ fn error_buffer_too_short() {
     let inp = c.upload_raw(&[1, 0, 1]).unwrap();
     let out = c.alloc_filled(8, SENTINEL).unwrap();
     match Negate.launch(&c, &inp, &out, 5) {
-        Err(GpuError::BufferTooShort { which: "input", len: 3, count: 5 }) => {}
+        Err(GpuError::BufferTooShort {
+            which: "input",
+            len: 3,
+            count: 5,
+        }) => {}
         other => panic!("expected BufferTooShort(input), got {other:?}"),
     }
     let short_out = c.alloc_filled(2, SENTINEL).unwrap();
     let inp5 = c.upload_raw(&[1; 5]).unwrap();
     match Negate.launch(&c, &inp5, &short_out, 5) {
-        Err(GpuError::BufferTooShort { which: "output", len: 2, count: 5 }) => {}
+        Err(GpuError::BufferTooShort {
+            which: "output",
+            len: 2,
+            count: 5,
+        }) => {}
         other => panic!("expected BufferTooShort(output), got {other:?}"),
     }
-    assert_eq!(c.download_raw(&out).unwrap(), vec![SENTINEL; 8], "failed launch must not write");
+    assert_eq!(
+        c.download_raw(&out).unwrap(),
+        vec![SENTINEL; 8],
+        "failed launch must not write"
+    );
     assert_eq!(c.download_raw(&short_out).unwrap(), vec![SENTINEL; 2]);
 }
 
@@ -319,15 +421,24 @@ fn error_invalid_element_count() {
     }
     match Expr::input(0).eval(&c, &[&inp], 0) {
         Err(GpuError::InvalidCount(0)) => {}
-        other => panic!("expected InvalidCount(0) from Expr::eval, got {:?}", other.map(|_| ())),
+        other => panic!(
+            "expected InvalidCount(0) from Expr::eval, got {:?}",
+            other.map(|_| ())
+        ),
     }
 }
 
 #[test]
 fn error_invalid_local_size() {
     let mut c = ctx();
-    assert!(matches!(c.set_local_size(0), Err(GpuError::InvalidLocalSize)));
-    assert!(matches!(GpuContext::with_local_size(0), Err(GpuError::InvalidLocalSize)));
+    assert!(matches!(
+        c.set_local_size(0),
+        Err(GpuError::InvalidLocalSize)
+    ));
+    assert!(matches!(
+        GpuContext::with_local_size(0),
+        Err(GpuError::InvalidLocalSize)
+    ));
 }
 
 #[test]
@@ -363,7 +474,11 @@ fn canonical_validation_accepts_0x00_and_0x01() {
 fn canonical_validation_rejects_non_canonical() {
     use gpu::functor::is_canonical;
     for byte in 2u8..=255 {
-        assert!(!is_canonical(byte), "byte 0x{:02x} should be non-canonical", byte);
+        assert!(
+            !is_canonical(byte),
+            "byte 0x{:02x} should be non-canonical",
+            byte
+        );
     }
 }
 
@@ -383,8 +498,14 @@ fn canonical_buffer_validation_rejects_non_canonical() {
     use gpu::functor::validate_buffer;
     assert!(validate_buffer(&[0x02]).is_err(), "0x02 should be rejected");
     assert!(validate_buffer(&[0xFF]).is_err(), "0xFF should be rejected");
-    assert!(validate_buffer(&[0x00, 0x02]).is_err(), "0x02 in position 1 should be rejected");
-    assert!(validate_buffer(&[0x01, 0x01, 0x80]).is_err(), "0x80 should be rejected");
+    assert!(
+        validate_buffer(&[0x00, 0x02]).is_err(),
+        "0x02 in position 1 should be rejected"
+    );
+    assert!(
+        validate_buffer(&[0x01, 0x01, 0x80]).is_err(),
+        "0x80 should be rejected"
+    );
 }
 
 #[test]
@@ -393,7 +514,10 @@ fn canonical_bools_to_gpu_conversion() {
     assert_eq!(bools_to_gpu(&[]), vec![]);
     assert_eq!(bools_to_gpu(&[false]), vec![0x00]);
     assert_eq!(bools_to_gpu(&[true]), vec![0x01]);
-    assert_eq!(bools_to_gpu(&[true, false, true, true, false]), vec![0x01, 0x00, 0x01, 0x01, 0x00]);
+    assert_eq!(
+        bools_to_gpu(&[true, false, true, true, false]),
+        vec![0x01, 0x00, 0x01, 0x01, 0x00]
+    );
 }
 
 #[test]
@@ -452,19 +576,24 @@ fn double_negation_byte_equality() {
         vec![0x00, 0x01],
         vec![0x01, 0x00],
         vec![0x00, 0x01, 0x00, 0x01, 0x00],
-        (0..1000).map(|i| if i % 2 == 0 { 0x00 } else { 0x01 }).collect::<Vec<_>>(),
+        (0..1000)
+            .map(|i| if i % 2 == 0 { 0x00 } else { 0x01 })
+            .collect::<Vec<_>>(),
     ];
     for input in inputs {
         let count = input.len();
         let inp_buf = c.upload_raw(&input).unwrap();
         let tmp_buf = c.alloc(count).unwrap();
         let out_buf = c.alloc(count).unwrap();
-        
+
         Negate.launch(&c, &inp_buf, &tmp_buf, count).unwrap();
         Negate.launch(&c, &tmp_buf, &out_buf, count).unwrap();
-        
+
         let result = c.download_raw(&out_buf).unwrap();
-        assert_eq!(result, input, "double negation must be byte-for-byte identity");
+        assert_eq!(
+            result, input,
+            "double negation must be byte-for-byte identity"
+        );
     }
 }
 
@@ -483,7 +612,10 @@ fn negate_rejects_non_canonical_input() {
 
     // Output should remain untouched after failed validation
     let sentinel = c.download_raw(&out_buf).unwrap();
-    assert!(sentinel.iter().all(|&b| b == 0), "output should be untouched after validation failure");
+    assert!(
+        sentinel.iter().all(|&b| b == 0),
+        "output should be untouched after validation failure"
+    );
 }
 
 #[test]
@@ -510,7 +642,9 @@ fn negate_validates_input_single_invalid_byte() {
                     err_msg.contains(&format!("index {}", expected_index))
                         && err_msg.contains(&format!("0x{:02x}", expected_value)),
                     "error message should contain index {} and value 0x{:02x}, got: {}",
-                    expected_index, expected_value, err_msg
+                    expected_index,
+                    expected_value,
+                    err_msg
                 );
             }
             other => panic!("expected validation error for {:?}, got {other:?}", input),
@@ -552,9 +686,16 @@ fn negate_validates_input_accepts_canonical() {
             Ok(()) => {
                 let result = c.download_raw(&out_buf).unwrap();
                 let expected: Vec<u8> = input.iter().map(|&b| b ^ 1).collect();
-                assert_eq!(result, expected, "output should be correct for input {:?}", input);
+                assert_eq!(
+                    result, expected,
+                    "output should be correct for input {:?}",
+                    input
+                );
             }
-            Err(e) => panic!("should accept canonical input {:?}, got error: {}", input, e),
+            Err(e) => panic!(
+                "should accept canonical input {:?}, got error: {}",
+                input, e
+            ),
         }
     }
 }

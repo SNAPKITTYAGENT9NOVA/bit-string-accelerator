@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  hdl:
+    name: RTL lint and simulation
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install simulators
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends iverilog verilator
+      - name: Compact accelerator
+        run: make lint sim
+      - name: Compact accelerator, extra random seeds
+        run: for s in 2 3 4; do make sim-icarus SEED=$s OPS=3000; done
+      - name: bit_accelerator v2
+        run: make -C bit_accelerator lint sim
+
+  formal:
+    name: Why3 proofs
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Why3 and Z3
+        run: |
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends why3 z3
+          why3 config detect
+      - name: Compact accelerator proofs
+        run: make formal
+      - name: bit_accelerator v2 proofs
+        run: make -C bit_accelerator formal
+
+  spice:
+    name: SPICE timing model
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ngspice
+      - run: make spice
+
+  gpu:
+    name: Rust OpenCL crate (gpu/)
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: gpu
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install OpenCL (PoCL CPU device)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pocl-opencl-icd ocl-icd-opencl-dev clinfo
+          clinfo -l
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: gpu
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      # Serial: PoCL 5.0 can abort (pocl_release_dlhandle_cache assertion) when
+      # several OpenCL contexts are released from different threads at once.
+      - run: cargo test
+        env:
+          RUST_TEST_THREADS: "1"
+      - run: cargo run --quiet

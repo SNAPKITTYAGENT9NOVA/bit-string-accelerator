@@ -106,11 +106,7 @@ impl Workflow {
         Ok(Workflow { ctx })
     }
 
-    pub fn run_unary<Op: UnaryOp>(
-        &self,
-        op: &Op,
-        input: &[u8],
-    ) -> Result<Vec<u8>> {
+    pub fn run_unary<Op: UnaryOp>(&self, op: &Op, input: &[u8]) -> Result<Vec<u8>> {
         let count = input.len();
         ValidationAgent::validate_input(count)?;
 
@@ -122,11 +118,7 @@ impl Workflow {
         VerificationAgent::download(&self.ctx, &out_buf)
     }
 
-    pub fn run_unary_bools<Op: UnaryOp>(
-        &self,
-        op: &Op,
-        input: &[bool],
-    ) -> Result<Vec<bool>> {
+    pub fn run_unary_bools<Op: UnaryOp>(&self, op: &Op, input: &[bool]) -> Result<Vec<bool>> {
         let count = input.len();
         ValidationAgent::validate_input(count)?;
 

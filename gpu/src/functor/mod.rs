@@ -1,7 +1,9 @@
 //! Composable element-wise GPU operations over a Boolean/u8 buffer representation.
 //!
-//! Representation: one `u8` per element. `0` is false, any non-zero value is true.
-//! `Negate` always writes canonical output (0 or 1).
+//! Representation: one `u8` per element; canonical Booleans are `0` (false) and `1` (true).
+//! `Negate` accepts only canonical input (it returns an error on any other byte) and
+//! writes canonical output. `Add` is wrapping `u8` addition, so its output is canonical
+//! only when no position has both inputs true.
 
 mod add;
 mod agents;
@@ -12,9 +14,11 @@ mod negate;
 
 pub use add::Add;
 pub use agents::{ExecutionAgent, ValidationAgent, VerificationAgent, Workflow};
-pub use canonical::{bools_to_gpu, gpu_to_bools, is_canonical, validate_buffer, CANONICAL_FALSE, CANONICAL_TRUE};
+pub use canonical::{
+    CANONICAL_FALSE, CANONICAL_TRUE, bools_to_gpu, gpu_to_bools, is_canonical, validate_buffer,
+};
 pub use expr::Expr;
-pub use kernels::{validate_registry, KERNEL_REGISTRY, ADD_U8_SIGNATURE, NEGATE_U8_SIGNATURE};
+pub use kernels::{ADD_U8_SIGNATURE, KERNEL_REGISTRY, NEGATE_U8_SIGNATURE, validate_registry};
 pub use negate::Negate;
 
 use ocl::{Buffer, ProQue};
@@ -30,9 +34,16 @@ pub enum GpuError {
     /// Element count cannot be represented as the kernel's `uint` argument.
     InvalidCount(usize),
     /// A buffer is shorter than the requested element count.
-    BufferTooShort { which: &'static str, len: usize, count: usize },
+    BufferTooShort {
+        which: &'static str,
+        len: usize,
+        count: usize,
+    },
     /// `Expr::Input(index)` refers to an input that was not supplied.
-    MissingInput { index: usize, supplied: usize },
+    MissingInput {
+        index: usize,
+        supplied: usize,
+    },
     /// A zero-length device buffer was requested (OpenCL cannot allocate one).
     EmptyBuffer,
     /// A zero local work-group size was requested.
@@ -95,7 +106,10 @@ impl GpuContext {
         let _guard = INIT_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let proque = ProQue::builder().src(src.to_string()).build()?;
         let max = proque.device().max_wg_size()?;
-        Ok(GpuContext { proque, local_size: DEFAULT_LOCAL_SIZE.min(max) })
+        Ok(GpuContext {
+            proque,
+            local_size: DEFAULT_LOCAL_SIZE.min(max),
+        })
     }
 
     pub fn set_local_size(&mut self, local_size: usize) -> Result<()> {
@@ -130,7 +144,11 @@ impl GpuContext {
         if len == 0 {
             return Err(GpuError::EmptyBuffer);
         }
-        Ok(Buffer::<u8>::builder().queue(self.proque.queue().clone()).len(len).fill_val(val).build()?)
+        Ok(Buffer::<u8>::builder()
+            .queue(self.proque.queue().clone())
+            .len(len)
+            .fill_val(val)
+            .build()?)
     }
 
     /// Upload raw bytes to a new device buffer.
@@ -138,7 +156,11 @@ impl GpuContext {
         if data.is_empty() {
             return Err(GpuError::EmptyBuffer);
         }
-        Ok(Buffer::<u8>::builder().queue(self.proque.queue().clone()).len(data.len()).copy_host_slice(data).build()?)
+        Ok(Buffer::<u8>::builder()
+            .queue(self.proque.queue().clone())
+            .len(data.len())
+            .copy_host_slice(data)
+            .build()?)
     }
 
     pub fn upload_bools(&self, data: &[bool]) -> Result<Buffer<u8>> {
@@ -204,7 +226,10 @@ pub trait UnaryOp {
     where
         Self: Sized,
     {
-        Compose { first: self, second: g }
+        Compose {
+            first: self,
+            second: g,
+        }
     }
 
     /// Convenience: run on host bools, executing on the device, returning a fresh Vec.

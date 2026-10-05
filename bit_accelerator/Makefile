@@ -1,101 +1,55 @@
-# Bit Accelerator Build System
-# Complete build and verification workflow
+# bit_accelerator build and verification.
+#
+# The verified design is bit_accelerator_v2 (rtl/bit_accelerator_v2.sv).
+# The v1 sources (bit_accelerator.sv and its submodules) are kept for reference
+# only and are not built: v1 multiply-drives result_valid/result_bit and its
+# testbench does not compile. See README.md, "Design versions".
 
-.PHONY: all clean rtl sim verify formal spice test
+VERILATOR   ?= verilator
+IVERILOG    ?= iverilog
+VVP         ?= vvp
+WHY3_PROVER ?= z3
+WHY3_TIME   ?= 30
+BUILD       ?= build
 
-# Tool configuration
-VERILATOR = verilator
-VERILATOR_FLAGS = --cc --exe --build -j 4
-WY3 = why3
-WY3_FLAGS = prove --timeout 10 --steps 100000
+V2_RTL  := rtl/bit_accelerator_v2.sv
+V2_TB   := testbenches/tb_bit_accelerator_v2.sv
+FORMAL  := formal/bit_addressing.mlw formal/bit_addressing_proofs.mlw
 
-# Directories
-RTL_DIR = rtl
-TB_DIR = testbenches
-FORMAL_DIR = formal
-SIM_DIR = sim
-SPICE_DIR = spice
-OBJ_DIR = obj_dir
-
-# Source files
-RTL_SOURCES = \
-	$(RTL_DIR)/bit_accelerator_pkg.sv \
-	$(RTL_DIR)/bit_address_generator.sv \
-	$(RTL_DIR)/bit_extractor.sv \
-	$(RTL_DIR)/bit_modifier.sv \
-	$(RTL_DIR)/behavioral_memory.sv \
-	$(RTL_DIR)/bit_accelerator.sv
-
-TB_SOURCES = $(TB_DIR)/tb_bit_accelerator.sv
-
-FORMAL_SOURCES = \
-	$(FORMAL_DIR)/bit_addressing.why3 \
-	$(FORMAL_DIR)/bit_addressing_proofs.why3
-
-# Targets
-all: rtl sim test formal
-
-# RTL Lint and Check
-rtl:
-	@echo "=== Checking RTL Syntax ==="
-	$(VERILATOR) --lint-only -Wall $(RTL_SOURCES)
-	@echo "✓ RTL syntax check passed"
-
-# Simulation
-sim: $(OBJ_DIR)/Vbit_accelerator
-	@echo "=== Building Testbench ==="
-	$(OBJ_DIR)/Vbit_accelerator
-	@echo "✓ Simulation completed"
-
-$(OBJ_DIR)/Vbit_accelerator: $(RTL_SOURCES) $(TB_SOURCES)
-	@echo "=== Compiling with Verilator ==="
-	mkdir -p $(OBJ_DIR)
-	$(VERILATOR) $(VERILATOR_FLAGS) \
-		--top-module tb_bit_accelerator \
-		--Mdir $(OBJ_DIR) \
-		$(RTL_SOURCES) $(TB_SOURCES)
-
-# Test execution
-test: sim
-	@echo "=== Functional Verification ==="
-	@echo "Running testbench..."
-	@$(OBJ_DIR)/Vbit_accelerator
-
-# Formal Verification with Why3
-formal:
-	@echo "=== Formal Verification with Why3 ==="
-	@for file in $(FORMAL_SOURCES); do \
-		echo "Verifying $$file..."; \
-		$(WY3) $(WY3_FLAGS) $$file || exit 1; \
-	done
-	@echo "✓ All formal proofs verified"
-
-# Clean
-clean:
-	@echo "=== Cleaning Build Artifacts ==="
-	rm -rf $(OBJ_DIR)
-	rm -f $(SIM_DIR)/*.vcd
-	rm -f $(SIM_DIR)/*.out
-	@echo "✓ Cleanup complete"
-
-# Help
-help:
-	@echo "Bit Accelerator Build System"
-	@echo "============================"
-	@echo ""
-	@echo "Targets:"
-	@echo "  make all      - Build RTL, simulate, and verify (full workflow)"
-	@echo "  make rtl      - Check RTL syntax"
-	@echo "  make sim      - Compile and run simulation"
-	@echo "  make test     - Run functional tests"
-	@echo "  make formal   - Run formal verification with Why3"
-	@echo "  make clean    - Remove build artifacts"
-	@echo "  make help     - Show this help message"
-	@echo ""
-	@echo "Tools Required:"
-	@echo "  - Verilator (open-source Verilog simulator)"
-	@echo "  - Why3 (formal verification platform)"
-	@echo ""
-
-# Default target
+.PHONY: help all test lint sim sim-verilator sim-icarus formal formal-cvc4 clean
 .DEFAULT_GOAL := help
+
+all test: lint sim formal
+
+lint:
+	$(VERILATOR) --lint-only -Wall $(V2_RTL)
+
+sim: sim-verilator sim-icarus
+
+sim-verilator:
+	OUT=$(abspath $(BUILD))/verilator ./run_v2_sim.sh
+
+sim-icarus:
+	mkdir -p $(BUILD)
+	$(IVERILOG) -g2012 -o $(BUILD)/tb_v2.vvp $(V2_RTL) $(V2_TB)
+	$(VVP) -n $(BUILD)/tb_v2.vvp
+
+formal:
+	./scripts/prove.sh -P $(WHY3_PROVER) -t $(WHY3_TIME) -L formal $(FORMAL)
+
+# Cross-check with CVC4. Informational: CVC4 does not discharge every goal
+# within the time limit, Z3 does.
+formal-cvc4:
+	-./scripts/prove.sh -P cvc4 -t $(WHY3_TIME) -L formal $(FORMAL)
+
+clean:
+	rm -rf $(BUILD) obj_dir
+
+help:
+	@echo "make test           lint + both simulators + Why3 proofs"
+	@echo "make lint           verilator -Wall on the v2 RTL"
+	@echo "make sim            v2 testbench under Verilator and Icarus"
+	@echo "make formal         prove formal/*.mlw with $(WHY3_PROVER) (every goal must be Valid)"
+	@echo "make formal-cvc4    informational CVC4 cross-check"
+	@echo "make clean          remove $(BUILD)/"
+	@echo "Needs: verilator >= 5, iverilog >= 12, why3 >= 1.6 with z3 (why3 config detect)"
