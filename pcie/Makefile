@@ -11,6 +11,8 @@
 #                       through a liblitepcie stand-in (needs `make soc` first)
 #   make perf           engine throughput in clock cycles at the LiteFury geometry
 #                       (8 lanes x 2048 words): host bench against the Verilated core
+#   make timing         open-source place and route for the XC7A100T (nextpnr-xilinx;
+#                       set NEXTPNR and CHIPDB, see timing/run.sh): Fmax estimate
 #   make bitstream      full build with Vivado (not available in CI)
 #
 # The engine testbench fails unless results and final memory equal the
@@ -36,15 +38,16 @@ DRIVER  := $(SOC_DIR)/driver
 GEOMETRIES := 2x4 4x16 8x16 8x512
 SEEDS      := 1 7
 TB_INC     := tb/gold_ops.svh tb/range_stim.svh
-ENGINE_RUNS := $(foreach g,$(GEOMETRIES),$(foreach s,$(SEEDS),run-$(g)-$(s)))
+# plus 16 lanes, and a build without the MATCH unit (opcode 15 must be an error)
+ENGINE_RUNS := $(foreach g,$(GEOMETRIES),$(foreach s,$(SEEDS),run-$(g)-$(s))) run-16x8-1
 
 # $(call vvp_check,command,log): run, show the summary, fail unless exit 0 and PASS.
 define vvp_check
-$(1) > $(2) 2>&1; rc=$$?; grep -E '^(stimulus|range coverage|checks|PASS|FAIL)' $(2); \
+$(1) > $(2) 2>&1; rc=$$?; grep -E '^(stimulus|range coverage|match coverage|checks|PASS|FAIL)' $(2); \
   test $$rc -eq 0 && grep -q '^PASS' $(2)
 endef
 
-.PHONY: all lint sim sim-engine sim-core sim-verilator soc cosim perf bitstream clean $(ENGINE_RUNS)
+.PHONY: all lint sim sim-engine sim-core sim-verilator soc cosim perf timing bitstream clean $(ENGINE_RUNS) run-nomatch
 .DEFAULT_GOAL := all
 all: lint sim sim-verilator
 
@@ -54,13 +57,21 @@ lint:
 
 sim: sim-engine sim-core
 
-sim-engine: $(ENGINE_RUNS)
+sim-engine: $(ENGINE_RUNS) run-nomatch
 
 # run-<lanes>x<words per lane>-<seed>
 .SECONDEXPANSION:
 $(ENGINE_RUNS): run-%: $(BUILD)/tb_$$(word 1,$$(subst -, ,$$*)).vvp
 	@echo "engine $*"
 	@$(call vvp_check,$(VVP) -n $< +seed=$(word 2,$(subst -, ,$*)) +ops=$(OPS),$(BUILD)/run-$*.log)
+
+run-nomatch: $(BUILD)/tb_nomatch.vvp
+	@echo "engine 4x16 without MATCH"
+	@$(call vvp_check,$(VVP) -n $< +seed=1 +ops=$(OPS),$(BUILD)/run-nomatch.log)
+
+$(BUILD)/tb_nomatch.vvp: $(REF) $(ENGINE) tb/tb_engine.sv $(TB_INC)
+	@mkdir -p $(BUILD)
+	$(IVERILOG) -g2012 -Itb -DLANES=4 -DWPL=16 -DMATCH=0 -o $@ $(REF) $(ENGINE) tb/tb_engine.sv
 
 $(BUILD)/tb_%.vvp: $(REF) $(ENGINE) tb/tb_engine.sv $(TB_INC)
 	@mkdir -p $(BUILD)
@@ -71,9 +82,12 @@ sim-core:
 	$(IVERILOG) -g2012 -Itb -o $(BUILD)/tb_core.vvp $(REF) $(ENGINE) $(CORE) tb/tb_pcie_core.sv
 	@$(call vvp_check,$(VVP) -n $(BUILD)/tb_core.vvp,$(BUILD)/core.log)
 
+# --output-split-cfuncs 0: Verilator 5.020 splits the testbench's main initial
+# block (a coroutine with a fork) across C++ functions and drops the code that
+# waits for the join; the binary then crashes (illegal instruction).
 sim-verilator:
 	@mkdir -p $(BUILD)
-	$(VERILATOR) --binary --timing --timescale 1ns/1ps -Wno-fatal -Wno-lint -Wno-style -Itb \
+	$(VERILATOR) --binary --timing --timescale 1ns/1ps -Wno-fatal -Wno-lint -Wno-style -Itb --output-split-cfuncs 0 \
 	  --top-module tb_engine -Mdir $(BUILD)/verilator $(REF) $(ENGINE) tb/tb_engine.sv >/dev/null
 	@$(call vvp_check,$(BUILD)/verilator/Vtb_engine +ops=$(OPS),$(BUILD)/verilator.log)
 
@@ -101,18 +115,23 @@ cosim:
 	$(BUILD)/cosim/obj/bitacc_pcie_cosim selftest 50000 9 50
 
 # Fails if a bench needs more cycles per descriptor than the design intends:
-# single-bit 1 (plus 2%), COUNT/FIND over 16384 words 16384/8 steps of 1 cycle,
-# BULK over 8192 words 8192/8 steps of 2 cycles (plus 1% and a fixed 16 for
-# pipeline fill).
+# single-bit 1 (plus 2%), COUNT/FIND/MATCH over 16384 words 16384/8 steps of
+# 1 cycle, BULK over 8192 words 8192/8 steps of 2 cycles (plus 1% and a fixed
+# allowance for pipeline fill and the MATCH pattern load).
 perf:
 	$(call cosim_build,$(BUILD)/perf,8,2048)
 	$(BUILD)/perf/obj/bitacc_pcie_cosim selftest 20000 3 20
-	@for kl in get:1.02 count:2084 find:2084 xor:2084; do \
+	@for kl in get:1.02 count:2084 find:2084 xor:2084 match:2084; do \
 	  k=$${kl%:*}; limit=$${kl#*:}; n=$$( [ $$k = get ] && echo 200000 || echo 2048 ); \
 	  out=$$($(BUILD)/perf/obj/bitacc_pcie_cosim bench $$k $$n 2>&1) || { echo "$$out"; exit 1; }; \
 	  echo "$$out" | grep -E '^(bench|mock)'; \
 	  echo "$$out" | awk -v l=$$limit '/^mock:/ { c = $$(NF-1) } END { if (c == "" || c + 0 > l) { print "cycles/descriptor " c " above " l; exit 1 } }' || exit 1; \
 	done
+
+TIMING_CONFIGS ?= 8:2048:1 8:2048:0
+timing:
+	@set -e; cd timing; for c in $(TIMING_CONFIGS); do \
+	  echo "== $$c (lanes:words per lane:MATCH)"; ./run.sh $$(echo $$c | tr ':' ' '); done
 
 bitstream:
 	cd litex && $(PYTHON) bitacc_litefury.py --build --driver --output-dir $(SOC_DIR)

@@ -31,7 +31,7 @@ from litex.build.generic_platform import Pins
 
 from litex_boards.targets.sqrl_acorn import BaseSoC
 
-FORMAT_VERSION = 2
+FORMAT_VERSION = 3
 
 RTL = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "rtl")
 
@@ -39,7 +39,7 @@ RTL = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "rtl")
 class BitAcc(LiteXModule):
     """bitacc_pcie_core with CSR access; connect dma_source/dma_sink to a LitePCIe DMA."""
 
-    def __init__(self, platform, dma, lanes=8, words_per_lane=2048):
+    def __init__(self, platform, dma, lanes=8, words_per_lane=2048, with_match=True):
         word_bits = (lanes * words_per_lane - 1).bit_length()
 
         # Host word access.
@@ -63,6 +63,9 @@ class BitAcc(LiteXModule):
         ])
         self.version      = CSRStatus(8, reset=FORMAT_VERSION,
             description="Descriptor/result format version (see bitacc_pcie_core.sv).")
+        self.features     = CSRStatus(fields=[
+            CSRField("match", size=1, offset=0, reset=int(with_match), description="MATCH unit present."),
+        ])
         self.comb += [
             self.config.fields.lanes.eq(lanes),
             self.config.fields.words_per_lane.eq(words_per_lane),
@@ -71,6 +74,7 @@ class BitAcc(LiteXModule):
         self.specials += Instance("bitacc_pcie_core",
             p_LANES          = lanes,
             p_WORDS_PER_LANE = words_per_lane,
+            p_WITH_MATCH     = int(with_match),
             i_clk            = ClockSignal("sys"),
             i_reset          = ResetSignal("sys"),
             # host -> card
@@ -99,14 +103,14 @@ class BitAcc(LiteXModule):
 
 
 class BitAccSoC(BaseSoC):
-    def __init__(self, lanes=8, words_per_lane=2048, **kwargs):
+    def __init__(self, lanes=8, words_per_lane=2048, with_match=True, **kwargs):
         BaseSoC.__init__(self,
             variant            = "cle-101",     # LiteFury-equivalent XC7A100T
             with_pcie          = True,
             pcie_ndmas         = 1,
             **kwargs)
         self.bitacc = BitAcc(self.platform, self.pcie_dma0,
-            lanes=lanes, words_per_lane=words_per_lane)
+            lanes=lanes, words_per_lane=words_per_lane, with_match=with_match)
 
 
 def main():
@@ -116,6 +120,7 @@ def main():
     parser.add_target_argument("--sys-clk-freq",   default=125e6, type=float, help="System clock frequency.")
     parser.add_target_argument("--lanes",          default=8,     type=int,   help="Engine lanes (power of two).")
     parser.add_target_argument("--words-per-lane", default=2048,  type=int,   help="64-bit words per lane (power of two).")
+    parser.add_target_argument("--no-match",       action="store_true",       help="Leave out the MATCH unit.")
     parser.add_target_argument("--driver",         action="store_true",       help="Generate the PCIe driver.")
     # The host drives the engine over PCIe; no soft CPU or UART is needed.
     parser.set_defaults(cpu_type="None", no_uart=True)
@@ -125,6 +130,7 @@ def main():
         sys_clk_freq   = args.sys_clk_freq,
         lanes          = args.lanes,
         words_per_lane = args.words_per_lane,
+        with_match     = not args.no_match,
         **parser.soc_argdict)
     builder = Builder(soc, **parser.builder_argdict)
     if args.build:

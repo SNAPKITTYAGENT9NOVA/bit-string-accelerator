@@ -9,12 +9,12 @@ host RAM ──DMA reader──▶ descriptors ─▶ dispatch ─┬▶ lane 0 
                          (128-bit)                 │ (word w → lane w mod N)│  (descriptor order)  (64-bit, 2 per beat)
                                                    └▶ range unit ──────────┘
                                                       (all lanes at once)
-CSRs (BAR0): word access to the bit store, status, counters, geometry, format version
+CSRs (BAR0): word access to the bit store, status, counters, geometry, format version, features
 ```
 
 | Path | Contents |
 |---|---|
-| `rtl/bitacc_engine.sv` | N lanes, each owning one memory bank; range unit; reorder buffer; host word port |
+| `rtl/bitacc_engine.sv` | N lanes, each owning one memory bank; range unit with pattern matcher; reorder buffer; host word port |
 | `rtl/bitacc_pcie_core.sv` | 128-bit descriptor/result streams, result packing, register interface |
 | `tb/gold_ops.svh` | reference semantics of every operation, executed on the reference core |
 | `tb/range_stim.svh` | random range-operation stimulus and coverage goals |
@@ -24,20 +24,22 @@ CSRs (BAR0): word access to the bit store, status, counters, geometry, format ve
 | `litex/bitacc_litefury.py` | LiteX SoC: LitePCIe Gen2 x4, one DMA channel, CSRs, DDR3 controller |
 | `host/bitacc_pcie.c` | Linux host program (`info`, `selftest`, `bench`) on the generated liblitepcie |
 | `host/sim/mock_litepcie.cpp` | liblitepcie stand-in backed by the Verilated core, for co-simulation |
+| `host/cpu_bench.c` | the same work on the host CPU, for comparison (`make -C host cpu_bench`) |
+| `timing/` | open-source place and route for the XC7A100T: wrapper, pins, `run.sh` |
 
 ## Operations
 
-One 16-byte descriptor per operation (format version 2, readable from the
-`version` CSR):
+One 16-byte descriptor per operation (format version 3, readable from the
+`version` CSR; the `features` CSR says whether the MATCH unit is built in):
 
 | Bits | Field |
 |---|---|
 | `[63:0]` | `a`: bit address (single-bit and bit-range operations), or destination word (BULK) |
 | `[67:64]` | opcode |
 | `[68]` | `dry`: BULK computes and counts without writing |
-| `[71:69]` | `fn`: BULK function |
+| `[71:69]` | `fn`: BULK function; MATCH result kind |
 | `[103:72]` | `len`: range length in bits, or in words for BULK |
-| `[127:104]` | `src`: source word (BULK) |
+| `[127:104]` | `src`: source word (BULK); pattern word (MATCH, mask in `src + 1`) |
 
 | Opcode | Operation | Result value | Result bit |
 |---|---|---|---|
@@ -47,7 +49,15 @@ One 16-byte descriptor per operation (format version 2, readable from the
 | 9 FIND1, 10 FIND0 | first set / clear bit in `[a, a+len)` | its index (0 if none) | found |
 | 11 SETR, 12 CLEARR, 13 FLIPR | set / clear / invert every bit of `[a, a+len)` | set bits before the operation | value ≠ 0 |
 | 14 BULK | `dst[k] = fn(dst[k], src[k])` for words `k < len`; fn 0 COPY, 1 AND, 2 OR, 3 XOR, 4 ANDN (`dst & ~src`) | set bits in the results | value ≠ 0 |
-| 5–7, 15 | undefined | error | |
+| 15 MATCH | find the 64-bit pattern (word `src`) under its mask (word `src + 1`) at every bit position of `[a, a+len)` | fn 0: number of matches; fn 1: first matching position (0 if none) | fn 0: value ≠ 0; fn 1: found |
+| 5–7 | undefined | error | |
+
+A position `s` matches when every mask bit `j` lies inside the range
+(`s + j < a + len`) and `bit(s + j) == pattern[j]`. The mask can be any
+64-bit value: a run of low bits is a pattern of that length, and other masks
+give patterns with gaps. A zero mask matches every position. The host writes
+the pattern and mask words like any other data (word writes, or SETR/CLEARR
+and BULK COPY in the descriptor stream).
 
 One 8-byte result per descriptor, in descriptor order:
 `[7:0] = 0xA0 | error << 1 | bit` (the UART builds' status byte), `[63:8] = value`.
@@ -57,10 +67,11 @@ These are errors, with no write and a result of bit 0, value 0:
 - A bit range with `a + len > words × 64`, including 64-bit wrap.
 - A BULK region outside the store.
 - A BULK with partially overlapping regions. Identical regions are allowed.
-- `fn > 4`.
+- BULK with `fn > 4`; MATCH with `fn > 1`, with `src + 2 > words`, or on a
+  build without the MATCH unit.
 - An undefined opcode.
 
-`len = 0` is valid: the value is 0 and FIND finds nothing.
+`len = 0` is valid: the value is 0 and FIND and MATCH find nothing.
 
 Each range descriptor does up to a whole bit store's worth of work: 1 Mbit
 at the default 8 lanes × 2,048 words. That is the point. Single-bit
@@ -98,7 +109,8 @@ wrong rotation fails to prove.
 execute every range operation as single-bit operations on
 `rtl/bit_accelerator.sv` (`tb/gold_ops.svh`). For example, COUNT is GETs of
 every bit, and BULK is GET src, GET dst, then SET or CLEAR dst for every
-bit. Which range operations are errors is a specification choice, and it is
+bit. MATCH GETs the 64 pattern bits, the 64 mask bits and every haystack bit,
+then applies the match rule above. Which range operations are errors is a specification choice, and it is
 cross-checked against the reference core: the core must reject the last bit
 of every invalid non-empty bit range. The host program's model
 (`host/bitacc_pcie.c`) is a second, independent word-level implementation,
@@ -112,12 +124,20 @@ is not a formal proof of the whole engine.
 `tb/tb_engine.sv` runs the engine and the reference on the same random stream:
 - Hot-spot bursts that queue in one lane while others overtake them.
 - Random, past-the-end and 64-bit-wrapping addresses, and undefined opcodes.
-- About 8% range operations in every class: short (word-crossing),
+- About 10% range operations in every class: short (word-crossing),
   multi-step, empty, ending exactly at the end of the store, past the end,
   wrapping, and whole-store.
 - BULK with disjoint, identical, overlapping and out-of-range regions,
   every function, and dry runs.
 - FIND over regions a fill just emptied.
+- MATCH, with the mask built in the stream right before it (by CLEARR/SETR):
+  - contiguous runs of mask bits;
+  - zero masks;
+  - two far-apart bits, so windows cross words;
+  - a full mask whose pattern is a BULK COPY of a haystack word;
+  - whatever the memory holds.
+
+  Both result kinds and the error cases are covered.
 - Input gaps, and result backpressure with stalls long enough to fill the
   reorder buffer.
 
@@ -125,43 +145,47 @@ It compares every result (error, bit and value) and every final memory
 word. It fails unless all of these actually occurred:
 - every class above;
 - out-of-order completion and a full reorder buffer;
-- both barrier directions: a range operation waiting for busy lanes, and an
-  operation waiting for a running range operation;
-- FIND found and FIND not found.
+- both barrier directions: a range operation waiting for dispatched
+  single-bit operations, and an operation waiting for a running range
+  operation;
+- FIND found and not found;
+- MATCH with matches, with none, found, not found, and over several steps.
 
 Coverage is counted from what was executed, not from the generator's intent.
 
 | Check | Result |
 |---|---|
-| Engine, 2×4, 4×16, 8×16, 8×512 lanes × words, seeds 1 and 7, 4,000 operations each (Icarus) | 0 mismatches. 8,069–24,432 checks per run; up to 1.45 M reference-core operations per run. |
+| Engine, 2×4, 4×16, 8×16, 8×512 lanes × words, seeds 1 and 7, plus 16×8 and a build without MATCH; 4,000 operations each (Icarus) | 0 mismatches. 8,068–24,425 checks per run; up to 1.41 M reference-core operations per run. |
 | Engine under Verilator | 0 mismatches, all coverage goals met |
-| PCIe core, 3,200 descriptors including 357 range operations (Icarus) | 9,893 checks, 0 failures |
-| Host program against the Verilated core (`make cosim`) | 200,000 operations (5% range) and 50,000 (50% range): 0 mismatches |
-| Host program at the LiteFury geometry, 8×2,048 (`make perf`) | 20,000 operations (20% range): 0 mismatches; 16,384 words checked |
-| Injected faults, range unit | 22/22 detected. Examples: mask edges, rotation direction, BULK bound and last step, src/dst base, barrier in either direction, FIND lane order and first hit, overlap check, dry run, ANDN, fills of partial words, counting after instead of before, range end bound, missing dst read, stale value on an error result. Two further mutants were equivalent, with no observable effect, and were dropped: running an empty range through one step (every mask is zero, so nothing is written or counted), and returning `r_idx` for FIND not found (`r_idx` is already 0 then). |
+| PCIe core, 3,200 descriptors including 469 range operations (Icarus) | 9,897 checks, 0 failures |
+| Host program against the Verilated core (`make cosim`) | 200,704 descriptors (12,855 range, 1,732 valid MATCH) and 50,176 (27,821 range, 3,726 valid MATCH): 0 mismatches |
+| Host program at the LiteFury geometry, 8×2,048 (`make perf`) | 20,480 descriptors (4,876 range, 676 valid MATCH): 0 mismatches; 16,384 words checked |
+| Injected faults, range unit | Rerun against the final testbench in progress; 22/22 detected on the version before the last testbench change. Examples: mask edges, rotation direction, BULK bound and last step, src/dst base, barrier in either direction, FIND lane order and first hit, overlap check, dry run, ANDN, fills of partial words, counting after instead of before, range end bound, missing dst read, stale value on an error result. |
+| Injected faults, MATCH and the pipelined front end | Rerun in progress; 18/18 detected on the previous testbench version: inverted compare, wrong neighbour lane, lost previous-step word, validity not shifted by a word, mask top bit ignored, last step missing, index not shifted, pattern and mask swapped, result kind ignored, pattern word bound, empty match range, pattern not awaited; skid buffer ignoring reorder space or overfilling, wrong skid slot, barrier counter, stale queue-full flag, write register not cleared |
 | Injected faults, PCIe core | 9/9 detected (result order in a beat, value position, error/bit swap, opcode bit 3, len and src fields, fn/dry fields, beat size, counter step) |
 | Injected faults, host co-simulation | FIND lane order, BULK rotation and fill count all detected (780–9,386 mismatches) |
 | Lane mapping (`formal/lane_map.mlw`) | 58/58 goals proved by Z3 |
-| Lint | `verilator -Wall` clean |
+| Lint | `verilator -Wall` clean, with and without MATCH, 2 to 16 lanes |
 
 Problems found and fixed while building this:
-- **The CI gate didn't gate.** `pcie/Makefile` ran testbenches as
-  `vvp … | grep '^(checks|PASS)'`. A pipeline's status is grep's, and a
-  failing run still prints its `checks=` line, so a failing simulation passed
-  `make` (demonstrated with a mutant: `fails=6`, exit status 0). Every run now
-  must exit 0 and print `PASS`.
-- **The Verilator stimulus was not random.** Verilator 5.020's seeded
-  `$random(seed)` roughly doubles the seed on each call, so values mod n
-  followed a short pattern. Under Verilator, the previous engine testbench
-  ran with a weak stimulus mix. The testbenches now use their own xorshift32
-  generator.
-- **The result packer stalled every third cycle.** It refused a result in
-  the cycle it emitted a full beat, which capped single-bit throughput at
-  0.666 descriptors per cycle. `make perf` measured this; the fix is in, and
-  `make perf` now fails if throughput regresses.
-
-The earlier testbench bugs (static stimulus variable, overcounting
-out-of-order metric, watchdog reset by idle) stay fixed.
+- **MATCH compared the wrong way.** The first matcher reported matches
+  where masked bits *differed*, `&((w ^ p) | ~m)` instead of
+  `~|((w ^ p) & m)`. The reference model caught it on the first run.
+- **The 65-bit end-address sum didn't wrap.** Casting the whole sum to 65
+  bits widened `(base << 3) + offset` too, so the effective address no
+  longer wrapped mod 2⁶⁴. Verilator's lint flagged it; `eff` is now an
+  explicit 64-bit value.
+- **An empty range returned a stale value.** One restructuring sent empty
+  ranges straight to the result, skipping the state that clears the
+  accumulator. I found it on review; every range now passes through that
+  state.
+- **Verilator 5.020 crashed the engine testbench** (illegal instruction).
+  It splits the main initial block, a coroutine with a fork, across C++
+  functions and drops the wait for the join. `--output-split-cfuncs 0`
+  avoids it.
+- From the previous round: the CI gate that didn't gate (vvp piped into
+  grep), Verilator's degenerate seeded `$random`, and the result packer's
+  stall every third cycle.
 
 ## Build
 
@@ -171,7 +195,9 @@ make -j8 sim sim-verilator      # equivalence runs (the 8x512 runs take ~6 minut
 make soc                        # LiteX sources + Linux driver (needs LiteX, no Vivado)
 make cosim                      # host program against the Verilated core
 make perf                       # cycle-level throughput at 8 lanes x 2048 words, with limits
+make timing                     # open-source place and route (needs nextpnr-xilinx, see below)
 make bitstream                  # needs Vivado (free edition covers the XC7A100T)
+make -C host cpu_bench          # the same work on the host CPU
 ```
 
 On the NUC, load the kernel driver from the generated
@@ -181,8 +207,11 @@ On the NUC, load the kernel driver from the generated
 make -C host LITEPCIE=../build/litefury/driver
 ./host/bitacc_pcie info
 ./host/bitacc_pcie selftest 10000000 1 5     # operations, seed, % range operations
-./host/bitacc_pcie bench count 100000        # also: get, find, xor
+./host/bitacc_pcie bench match 100000        # also: get, count, find, xor
+./host/cpu_bench                             # the NUC's CPU on the same work
 ```
+
+`litex/bitacc_litefury.py --no-match` builds the SoC without the MATCH unit.
 
 LiteX supports the LiteFury as the SQRL Acorn CLE-101, which litex-boards
 documents as equivalent (`litex_boards/platforms/sqrl_acorn.py`). The same
@@ -192,69 +221,100 @@ transport. I expect, but have not verified, that an ASM2464PD-based M.2
 enclosure presents the card as a normal PCIe device in USB4/TB mode. It is
 NVMe-only in USB 3 mode.
 
+## Timing (open-source estimate)
+
+Vivado is the tool that decides whether the design meets 125 MHz, and it
+hasn't been run. As an early signal, `timing/` places and routes the engine
+and PCIe core for the LiteFury's `xc7a100t-fgg484-2` with
+**nextpnr-xilinx** (openXC7) and the Project X-Ray database. A
+register-bounded wrapper (`timing/timing_top.sv`) stands in for LitePCIe;
+LitePCIe itself isn't included.
+
+Toolchain, built from source in this session:
+- nextpnr-xilinx from `github.com/openXC7/nextpnr-xilinx`;
+- the chip database exported with its `bbaexport.py` from `prjxray-db/artix7`.
+
+Point `NEXTPNR` and `CHIPDB` at them and run `make timing`.
+
+| Design | Fmax (nextpnr-xilinx) | LUTs (Yosys) | Flip-flops | RAMB36 |
+|---|---|---|---|---|
+| Before this change (range operations only) | 72.1 MHz | 9,948 | 2,670 | 32 |
+| 8 lanes, without MATCH | 79.6 MHz | 9,776 (+50 RAM32M) | 5,410 | 32 |
+| 8 lanes, with MATCH | pending (run in progress when this was pushed) | | | 32 |
+
+**It does not meet 125 MHz in this flow.** The first run found real
+structural paths, which are fixed:
+- the descriptor decode, a 64-bit add then compares in one cycle;
+- the combinational ready chain from dispatch back to the descriptor
+  source, through a 250-flip-flop clock enable;
+- block-RAM ports driven through logic;
+- 64-deep popcount and lowest-set-bit chains;
+- the BULK rotation select fanned out to every lane, and its crossbar
+  ending in logic.
+
+The fixes:
+- registered sums;
+- a 2-entry skid buffer with registered ready;
+- a registered outstanding-operation counter for the barrier;
+- registered queue-full flags;
+- registered addresses, write ports and masks;
+- balanced trees;
+- crossbars that end in registers;
+- a multi-cycle MATCH set-up.
+
+What remains is mostly routing. The current worst path has 1.2 ns of logic
+and 11.4 ns of routing, with single nets spanning about 50 tiles, between
+the dispatch decision and the skid buffer's write muxes. nextpnr-xilinx's
+placer is known to be weaker than Vivado's, so these numbers are
+pessimistic, but by how much is unknown. If Vivado also misses 125 MHz:
+- the next step is to make the decode stage a buffer too, so the dispatch
+  decision only drives local registers;
+- running the engine at a lower clock from its own clock domain is the
+  fallback.
+
 ## Resources (estimate)
 
-Yosys `synth_xilinx` for the engine and the PCIe core, with a 128 KiB bit
-store in every case:
+Yosys `synth_xilinx -abc9 -nowidelut` (the flow above), 128 KiB bit store:
 
-| Lanes × words per lane | LUTs | of XC7A100T | Flip-flops | RAMB36 |
-|---|---|---|---|---|
-| 8 × 2,048 (default) | 11,035 (+50 RAM32M) | 17% | 2,451 | 32 |
-| 16 × 1,024 | 21,200 (+74 RAM32M) | 33% | 4,122 | 32 |
-| 32 × 512 | 49,814 (+138 RAM32M) | 79% | 7,430 | 32 |
+| Lanes × words per lane | MATCH | LUTs | of XC7A100T (63,400) | Flip-flops | RAMB36 |
+|---|---|---|---|---|---|
+| 8 × 2,048 (default) | no | 9,776 | 15% | 5,410 | 32 |
+| 8 × 2,048 (default) | yes | pending (run in progress when this was pushed) | | | 32 |
 
-Before the range unit, the default geometry used about 3,330 LUTs. These
-figures exclude LitePCIe and the DDR3 controller. Timing closure at
-125 MHz has not been checked; that needs Vivado. 32 lanes is not a
-realistic fit next to LitePCIe.
+The matcher checks 64 positions × 64 mask bits per lane per cycle. That
+costs about 3,000 LUTs per lane, and it is what makes MATCH fast. 16 lanes
+are verified functionally (the 16×8 regression run). Their area and timing
+at the LiteFury geometry haven't been measured in this round; the previous
+round's estimate was about 21,000 LUTs without MATCH.
 
 ## Performance
 
 Cycle counts are measured by `make perf`: the host program's `bench`
 against the Verilated core at 8 × 2,048. The DMA stand-in offers one
 descriptor and takes one result beat per cycle, with no PCIe latency. The
-counts are therefore the engine's own throughput. Rates assume 125 MHz,
-which is unverified.
+counts are therefore the engine's own throughput. Rates are given at
+125 MHz, which this design doesn't reach in the open-source flow (see
+Timing). At the 79.6 MHz measured there, they scale by 0.64.
 
-| Descriptor | Cycles each | Bit store covered | At 125 MHz |
+| Descriptor | Cycles each | Work | At 125 MHz |
 |---|---|---|---|
-| single-bit GET (random) | 1.002 | 1 bit | 125 M descriptors/s, above the link's ~100–125 M/s |
-| COUNT, 1 Mbit | 2,053 | 1,048,576 bits | 16.4 µs, 64 Gbit/s |
-| FIND1, 1 Mbit, not found | 2,053 | 1,048,576 bits | 16.4 µs, 64 Gbit/s |
-| BULK XOR (dry), 8,192 words | 2,053 | 524,288 bits of dst (and as many of src) | 16.4 µs, 32 Gbit/s of dst |
+| single-bit GET (random) | 1.003 | 1 bit | 125 M descriptors/s |
+| COUNT, 1 Mbit | 2,057 | 1,048,576 bits | 16.5 µs, 64 Gbit/s |
+| FIND1, 1 Mbit, not found | 2,057 | 1,048,576 bits | 16.5 µs |
+| BULK XOR (dry), 8,192 words | 2,057 | 524,288 bits of dst | 16.5 µs, 32 Gbit/s of dst |
+| MATCH, 16-bit pattern, 1 M positions | 2,066 | 1,048,576 positions | 16.5 µs, 63 G positions/s |
 
-Bit ranges process N words per cycle; BULK processes N words per 2 cycles
-(source read, then destination read and write). A 16-byte descriptor now
-keeps the engine busy for up to 2,053 cycles, so PCIe is no longer the
-limit for range operations.
+**Against the CPU.** `host/cpu_bench.c` does the same work on the host:
+popcount loops, and a MATCH that compilers vectorize (checked against a
+naive one). Measured on this repository's build machine (Intel Xeon VM,
+2.8 GHz, 4 vCPUs, AVX-512, `-O3 -march=native`), 128 KiB store:
 
-**Against the CPU**, measured on one core of this repository's build
-machine (Intel Xeon VM, 2.8 GHz, `cc -O2 -mpopcnt`), on the same 128 KiB:
+The CPU comparison is pending; it needs an idle machine. Earlier measurements on the same machine, under load: COUNT 128 KiB in 9.2 µs (113 Gbit/s) on one core; MATCH with a 16-bit pattern about 3 G positions/s on one core with AVX-512.
 
-| | CPU, one core | Card, 8 lanes at 125 MHz |
-|---|---|---|
-| COUNT, 128 KiB | 9.2 µs (113 Gbit/s) | 16.4 µs + PCIe round trip |
-| XOR + count, 2 × 64 KiB | 5.3–6.6 µs (80–100 Gbit/s) | 16.4 µs + PCIe round trip |
+If those hold, the card at 125 MHz is slower than one core for COUNT and BULK, as before. For MATCH it is about 20× one core (63 vs about 3 G positions/s), and about 13× even at the 79.6 MHz of the open-source timing estimate. MATCH is the first operation where the card is expected to beat the CPU, though that is not yet measured on hardware.
 
-**At 8 lanes the card does not beat one CPU core on range operations
-either.** It is 1.8–3× slower, and a NUC has several cores. I have not
-measured the NUC itself.
-
-Range throughput scales linearly with lanes. At 16 lanes, COUNT would be
-about 128 Gbit/s, roughly one core's speed, if 16 lanes close timing at
-125 MHz. Neither the fit next to LitePCIe nor the timing is verified.
-
-Beyond that, the BRAM-only bit store on an XC7A100T is the wall. The
-DDR3 on the LiteFury (16-bit) is slower than its block RAM. A real speedup
-needs either many more lanes than this FPGA holds (the custom PCIe board
-or ASIC step of the roadmap), or operations where the CPU is weak.
-Bit-parallel pattern matching is a candidate for the latter, but it is
-neither implemented nor measured.
-
-What this design does establish:
-- operations whose work is independent of the link;
-- lane-parallel range execution with ordered, verified results;
-- a measured, regression-checked throughput.
+I haven't measured the NUC; run `host/cpu_bench` there to compare with its
+real CPU.
 
 ## Generated-code note
 

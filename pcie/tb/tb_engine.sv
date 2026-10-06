@@ -20,9 +20,13 @@ module tb_engine;
 `ifndef WPL
   `define WPL 16
 `endif
+`ifndef MATCH
+  `define MATCH 1
+`endif
   localparam int LANES = `LANES;
   localparam int WPL   = `WPL;
   localparam int WORDS = LANES * WPL;
+  localparam bit WITH_MATCH = `MATCH;
   localparam int MAXOPS = 20000;
 
   logic clk = 1'b0, reset = 1'b1;
@@ -135,7 +139,7 @@ module tb_engine;
   logic [63:0] host_wdata = '0, host_rdata;
   logic        idle;
 
-  bitacc_engine #(.LANES(LANES), .WORDS_PER_LANE(WPL)) dut (.*);
+  bitacc_engine #(.LANES(LANES), .WORDS_PER_LANE(WPL), .WITH_MATCH(WITH_MATCH)) dut (.*);
 
   logic        e_err_r [MAXOPS];
   logic        e_bit_r [MAXOPS];
@@ -208,7 +212,7 @@ module tb_engine;
   always @(negedge clk) begin
     if (!reset) begin
       if (dut.inflight == 32) rob_full_cycles <= rob_full_cycles + 1;
-      if (dut.d_valid && !dut.d_err && dut.d_range && dut.l_busy != '0) range_waits <= range_waits + 1;
+      if (dut.d_valid && !dut.d_err && dut.d_range && dut.ops_out != '0) range_waits <= range_waits + 1;
       if (dut.d_valid && !dut.d_err && !dut.d_range && dut.r_busy) single_waits <= single_waits + 1;
       for (int i = 0; i < LANES; i++)
         if (dut.l_done[i]) begin
@@ -232,6 +236,7 @@ module tb_engine;
   // ------------------------------------------------------------ main
   logic [63:0] v;
   integer kind;                                // per-operation stimulus class
+  integer pend_i = 0;                          // next entry of a pending MATCH sequence
   integer n_hot = 0, n_any = 0, n_past = 0, n_wrap = 0, n_undef = 0, n_range = 0;
   logic [63:0] ra;
 
@@ -264,9 +269,17 @@ module tb_engine;
       if (n == ops / 4 || n == ops / 2 || n == 3 * ops / 4) begin
         n_range++;
         gen_whole(n, n == ops / 4 ? 0 : n == ops / 2 ? 1 : 2);
-      end else if (kind >= 40 && rnd(4) == 0) begin   // range operation among the mixed ones
+      end else if (pend_i < rs_q_n || (kind >= 40 && rnd(4) == 0)) begin   // range operation
         n_range++;
-        gen_range(s_op[n], ra, s_len[n], s_src[n], s_fn[n], s_dry[n]);
+        if (pend_i < rs_q_n) begin                   // rest of a MATCH sequence
+          s_op[n] = rs_q_op[pend_i]; ra = rs_q_a[pend_i]; s_len[n] = rs_q_len[pend_i];
+          s_src[n] = rs_q_src[pend_i]; s_fn[n] = rs_q_fn[pend_i]; pend_i++;
+        end else if (rnd(4) == 0) begin
+          gen_match_seq();
+          s_op[n] = rs_q_op[0]; ra = rs_q_a[0]; s_len[n] = rs_q_len[0];
+          s_src[n] = rs_q_src[0]; s_fn[n] = rs_q_fn[0]; pend_i = 1;
+        end else
+          gen_range(s_op[n], ra, s_len[n], s_src[n], s_fn[n], s_dry[n]);
         if (rnd(2) == 0) begin s_base[n] = 0; s_off[n] = ra; end
         else begin s_base[n] = ra >> 3; s_off[n] = ra & 64'd7; end
       end else if (kind < 40) begin                       // hot spot: 4 words, all in lane 0

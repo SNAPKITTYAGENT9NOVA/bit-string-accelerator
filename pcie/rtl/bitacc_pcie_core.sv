@@ -3,16 +3,18 @@
 // streams to its DMA reader (host -> card) and writer (card -> host), but any
 // 128-bit valid/ready stream source works.
 //
-// Descriptor (one per 128-bit input beat, little-endian), format version 2:
+// Descriptor (one per 128-bit input beat, little-endian), format version 3:
 //   [63:0]    a: bit address (single-bit and bit-range operations; the host
 //             computes (base << 3) + offset), or dst word (BULK)
 //   [67:64]   opcode: 0 GET, 1 TEST, 2 SET, 3 CLEAR, 4 TOGGLE,
 //             8 COUNT, 9 FIND1, 10 FIND0, 11 SETR, 12 CLEARR, 13 FLIPR, 14 BULK,
-//             5-7 and 15 undefined (no write, result "error")
+//             15 MATCH (only with WITH_MATCH; otherwise an error),
+//             5-7 undefined (no write, result "error")
 //   [68]      dry: BULK computes and counts without writing
-//   [71:69]   fn: BULK function (0 COPY, 1 AND, 2 OR, 3 XOR, 4 ANDN)
+//   [71:69]   fn: BULK function (0 COPY, 1 AND, 2 OR, 3 XOR, 4 ANDN);
+//             MATCH result (0 number of matches, 1 first match)
 //   [103:72]  len: range length in bits, or in words for BULK
-//   [127:104] src word (BULK)
+//   [127:104] src word (BULK source; MATCH pattern, with the mask in src + 1)
 // Semantics and errors: see bitacc_engine.sv.
 //
 // Results: 8 bytes per descriptor, in descriptor order, 2 per output beat
@@ -29,7 +31,8 @@
 module bitacc_pcie_core #(
   parameter int LANES          = 8,
   parameter int WORDS_PER_LANE = 2048,
-  parameter int ROB_DEPTH      = 32
+  parameter int ROB_DEPTH      = 32,
+  parameter bit WITH_MATCH     = 1'b1
 )(
   input  logic         clk,
   input  logic         reset,
@@ -64,7 +67,8 @@ module bitacc_pcie_core #(
   logic [63:0] h_wdata, h_rdata;
   logic        eng_idle;
 
-  bitacc_engine #(.LANES(LANES), .WORDS_PER_LANE(WORDS_PER_LANE), .ROB_DEPTH(ROB_DEPTH)) u_engine (
+  bitacc_engine #(.LANES(LANES), .WORDS_PER_LANE(WORDS_PER_LANE), .ROB_DEPTH(ROB_DEPTH),
+                  .WITH_MATCH(WITH_MATCH)) u_engine (
     .clk, .reset,
     .cmd_valid(in_valid), .cmd_ready(in_ready),
     .cmd_op(in_data[67:64]), .cmd_base(64'd0), .cmd_offset(in_data[63:0]),

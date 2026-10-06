@@ -19,7 +19,7 @@ evidence: [`docs/verification.md`](docs/verification.md).
 | `bit_accelerator/` | Multi-stage v2 accelerator with its own testbench and proofs (also in `rust-opencl-gpu`) |
 | `fpga/` | Hardware build: UART + block-RAM wrapper, iCEBreaker and ULX3S bitstreams, host tool `bitacc` ([`fpga/README.md`](fpga/README.md)) |
 | `asic/` | sky130 standard-cell synthesis, equivalence proof, timing ([`asic/README.md`](asic/README.md)) |
-| `pcie/` | Parallel engine with range operations (count, find, fill, bulk logic) + PCIe core for the LiteFury, LiteX SoC, host program ([`pcie/README.md`](pcie/README.md)) |
+| `pcie/` | Parallel engine with range operations (count, find, fill, bulk logic, pattern match) + PCIe core for the LiteFury, LiteX SoC, host program, open-source timing flow ([`pcie/README.md`](pcie/README.md)) |
 | `tapeout/` | Tiny Tapeout (ttsky26d, sky130A) project, hardened and prechecked ([`tapeout/README.md`](tapeout/README.md), [`tapeout/SIGNOFF.md`](tapeout/SIGNOFF.md)) |
 | `gpu/` | Rust/OpenCL (`ocl`) crate from `rust-opencl-gpu` |
 | `.github/workflows/ci.yml` | CI: lint, simulation, proofs, SPICE, Rust |
@@ -89,10 +89,10 @@ from different threads at the same time. With one test thread it passed 40 of
 - `asic/` numbers are pre-layout for the bare core. `tapeout/` has a full layout (GDS) of the
   Tiny Tapeout top that passes DRC, LVS, antenna, timing and the Tiny Tapeout precheck; it has
   not been submitted or fabricated. The SPICE deck is an RC model, not extracted silicon.
-- The PCIe design has not run on a LiteFury: the bitstream needs Vivado, and its timing at
-  125 MHz is unchecked. At the default 8 lanes it is not expected to beat one host CPU core,
-  for single-bit or for range operations; `pcie/README.md` has the measured cycle counts and
-  the CPU comparison.
+- The PCIe design has not run on a LiteFury: the bitstream needs Vivado. An open-source place
+  and route (nextpnr-xilinx) reaches 79.6 MHz, not 125 MHz; Vivado's result is unknown. At
+  8 lanes the card is slower than one CPU core for COUNT/BULK and expected to be much faster
+  for MATCH (pattern search); see `pcie/README.md`.
 
 The Windows OpenCL SDK and `OpenCL.lib` from `rust-opencl-gpu` are not included
 here; the `ocl` crate locates the system OpenCL library.
