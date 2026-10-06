@@ -6,7 +6,9 @@
 #
 # The bit-operation engine (pcie/rtl) is attached to one LitePCIe DMA channel:
 #   DMA reader (host -> card) -> 128-bit descriptors -> engine
-#   engine -> 128-bit result beats (16 results each) -> DMA writer (card -> host)
+#   engine -> 128-bit result beats (2 results of 64 bits) -> DMA writer (card -> host)
+# Descriptor and result formats: pcie/rtl/bitacc_pcie_core.sv (format version 2,
+# readable from the version CSR).
 # Word access to the engine's bit store and status counters are CSRs on BAR0.
 #
 # Build (needs Vivado for the bitstream; the free edition covers the XC7A100T):
@@ -28,6 +30,8 @@ from litex.soc.integration.builder import Builder
 from litex.build.generic_platform import Pins
 
 from litex_boards.targets.sqrl_acorn import BaseSoC
+
+FORMAT_VERSION = 2
 
 RTL = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "rtl")
 
@@ -52,11 +56,13 @@ class BitAcc(LiteXModule):
             CSRField("rdata_valid", size=1, offset=2, description="host_rdata holds the last read."),
         ])
         self.ops_accepted = CSRStatus(32, description="Descriptors accepted since reset.")
-        self.results_sent = CSRStatus(32, description="Results sent since reset (multiple of 16).")
+        self.results_sent = CSRStatus(32, description="Results sent since reset (multiple of 2).")
         self.config       = CSRStatus(fields=[
             CSRField("lanes",          size=8,  offset=0),
             CSRField("words_per_lane", size=24, offset=8),
         ])
+        self.version      = CSRStatus(8, reset=FORMAT_VERSION,
+            description="Descriptor/result format version (see bitacc_pcie_core.sv).")
         self.comb += [
             self.config.fields.lanes.eq(lanes),
             self.config.fields.words_per_lane.eq(words_per_lane),
