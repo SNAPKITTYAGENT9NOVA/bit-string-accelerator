@@ -160,8 +160,8 @@ Coverage is counted from what was executed, not from the generator's intent.
 | PCIe core, 3,200 descriptors including 469 range operations (Icarus) | 9,897 checks, 0 failures |
 | Host program against the Verilated core (`make cosim`) | 200,704 descriptors (12,855 range, 1,732 valid MATCH) and 50,176 (27,821 range, 3,726 valid MATCH): 0 mismatches |
 | Host program at the LiteFury geometry, 8×2,048 (`make perf`) | 20,480 descriptors (4,876 range, 676 valid MATCH): 0 mismatches; 16,384 words checked |
-| Injected faults, range unit | Rerun against the final testbench in progress; 22/22 detected on the version before the last testbench change. Examples: mask edges, rotation direction, BULK bound and last step, src/dst base, barrier in either direction, FIND lane order and first hit, overlap check, dry run, ANDN, fills of partial words, counting after instead of before, range end bound, missing dst read, stale value on an error result. |
-| Injected faults, MATCH and the pipelined front end | Rerun in progress; 18/18 detected on the previous testbench version: inverted compare, wrong neighbour lane, lost previous-step word, validity not shifted by a word, mask top bit ignored, last step missing, index not shifted, pattern and mask swapped, result kind ignored, pattern word bound, empty match range, pattern not awaited; skid buffer ignoring reorder space or overfilling, wrong skid slot, barrier counter, stale queue-full flag, write register not cleared |
+| Injected faults, range unit | 22/22 detected against the final testbench. Examples: mask edges, rotation direction, BULK bound and last step, src/dst base, barrier in either direction, FIND lane order and first hit, overlap check, dry run, ANDN, fills of partial words, counting after instead of before, range end bound, missing dst read, stale value on an error result. |
+| Injected faults, MATCH and the pipelined front end | 18/18 detected: inverted compare, wrong neighbour lane, lost previous-step word, validity not shifted by a word, mask top bit ignored, last step missing, index not shifted, pattern and mask swapped, result kind ignored, pattern word bound, empty match range, pattern not awaited; skid buffer ignoring reorder space or overfilling, wrong skid slot, barrier counter, stale queue-full flag, write register not cleared |
 | Injected faults, PCIe core | 9/9 detected (result order in a beat, value position, error/bit swap, opcode bit 3, len and src fields, fn/dry fields, beat size, counter step) |
 | Injected faults, host co-simulation | FIND lane order, BULK rotation and fill count all detected (780–9,386 mismatches) |
 | Lane mapping (`formal/lane_map.mlw`) | 58/58 goals proved by Z3 |
@@ -211,7 +211,8 @@ make -C host LITEPCIE=../build/litefury/driver
 ./host/cpu_bench                             # the NUC's CPU on the same work
 ```
 
-`litex/bitacc_litefury.py --no-match` builds the SoC without the MATCH unit.
+The SoC leaves out the MATCH unit by default; `litex/bitacc_litefury.py --match`
+includes it (see Resources for why it is opt-in).
 
 LiteX supports the LiteFury as the SQRL Acorn CLE-101, which litex-boards
 documents as equivalent (`litex_boards/platforms/sqrl_acorn.py`). The same
@@ -240,7 +241,7 @@ Point `NEXTPNR` and `CHIPDB` at them and run `make timing`.
 |---|---|---|---|---|
 | Before this change (range operations only) | 72.1 MHz | 9,948 | 2,670 | 32 |
 | 8 lanes, without MATCH | 79.6 MHz | 9,776 (+50 RAM32M) | 5,410 | 32 |
-| 8 lanes, with MATCH | pending (run in progress when this was pushed) | | | 32 |
+| 8 lanes, with MATCH | did not route: stopped after 52 minutes, still in the router's first pass with 63,127 overused wires | 41,446 (+50 RAM32M) | 5,615 | 32 |
 
 **It does not meet 125 MHz in this flow.** The first run found real
 structural paths, which are fixed:
@@ -279,10 +280,17 @@ Yosys `synth_xilinx -abc9 -nowidelut` (the flow above), 128 KiB bit store:
 | Lanes × words per lane | MATCH | LUTs | of XC7A100T (63,400) | Flip-flops | RAMB36 |
 |---|---|---|---|---|---|
 | 8 × 2,048 (default) | no | 9,776 | 15% | 5,410 | 32 |
-| 8 × 2,048 (default) | yes | pending (run in progress when this was pushed) | | | 32 |
+| 8 × 2,048 (default) | yes | 41,446 | 65% | 5,615 | 32 |
 
 The matcher checks 64 positions × 64 mask bits per lane per cycle. That
-costs about 3,000 LUTs per lane, and it is what makes MATCH fast. 16 lanes
+costs about 4,000 LUTs per lane (31,700 for 8 lanes), and it is what makes
+MATCH fast. **At 8 lanes the design with MATCH is too big for this FPGA in
+practice.** It uses 65% of the LUTs before LitePCIe and the DDR3
+controller, and in the open-source flow it is too congested to route. The
+next step is to give the matcher fewer lanes than the rest of the engine
+(for example 2 to 4 matcher lanes, MATCH running at 128 to 256 positions
+per cycle), or to check fewer positions per lane per cycle. That is not
+implemented yet; until then the LiteX build leaves MATCH out unless given `--match`. 16 lanes
 are verified functionally (the 16×8 regression run). Their area and timing
 at the LiteFury geometry haven't been measured in this round; the previous
 round's estimate was about 21,000 LUTs without MATCH.
@@ -309,9 +317,19 @@ popcount loops, and a MATCH that compilers vectorize (checked against a
 naive one). Measured on this repository's build machine (Intel Xeon VM,
 2.8 GHz, 4 vCPUs, AVX-512, `-O3 -march=native`), 128 KiB store:
 
-The CPU comparison is pending; it needs an idle machine. Earlier measurements on the same machine, under load: COUNT 128 KiB in 9.2 µs (113 Gbit/s) on one core; MATCH with a 16-bit pattern about 3 G positions/s on one core with AVX-512.
+| Work (128 KiB store) | CPU, 1 thread | CPU, 4 threads (total) | Card, 8 lanes at 125 MHz |
+|---|---|---|---|
+| COUNT, 1 Mbit | 10.5 µs (100 Gbit/s) | 210 Gbit/s | 16.5 µs (64 Gbit/s) |
+| XOR + count, 2 × 64 KiB | 8.9 µs (59 Gbit/s of dst) | 217 Gbit/s | 16.5 µs (32 Gbit/s of dst) |
+| MATCH, 16-bit pattern | 2.0 G positions/s | 7.0 G positions/s | 63 G positions/s |
+| MATCH, 64-bit pattern | 4.0 G positions/s | 8.9 G positions/s | 63 G positions/s |
 
-If those hold, the card at 125 MHz is slower than one core for COUNT and BULK, as before. For MATCH it is about 20× one core (63 vs about 3 G positions/s), and about 13× even at the 79.6 MHz of the open-source timing estimate. MATCH is the first operation where the card is expected to beat the CPU, though that is not yet measured on hardware.
+For COUNT and BULK the card is slower than one core, as before. For MATCH
+the 8-lane card would be about 7× this machine's 4 threads at 125 MHz.
+That design doesn't fit and route, though (see Resources). A 2-lane matcher
+(about 16 G positions/s at 125 MHz) would still be about 2× the 4 threads,
+and a 4-lane one about 4×. These are estimates from cycle counts, not
+measurements on hardware.
 
 I haven't measured the NUC; run `host/cpu_bench` there to compare with its
 real CPU.

@@ -91,8 +91,9 @@ from different threads at the same time. With one test thread it passed 40 of
   not been submitted or fabricated. The SPICE deck is an RC model, not extracted silicon.
 - The PCIe design has not run on a LiteFury: the bitstream needs Vivado. An open-source place
   and route (nextpnr-xilinx) reaches 79.6 MHz, not 125 MHz; Vivado's result is unknown. At
-  8 lanes the card is slower than one CPU core for COUNT/BULK and expected to be much faster
-  for MATCH (pattern search); see `pcie/README.md`.
+  8 lanes the card is slower than one CPU core for COUNT/BULK. MATCH (pattern search) would be
+  about 7x a 4-thread CPU, but at 8 lanes it uses 65% of the FPGA's LUTs and does not route;
+  see `pcie/README.md`.
 
 The Windows OpenCL SDK and `OpenCL.lib` from `rust-opencl-gpu` are not included
 here; the `ocl` crate locates the system OpenCL library.

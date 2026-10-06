@@ -103,7 +103,7 @@ class BitAcc(LiteXModule):
 
 
 class BitAccSoC(BaseSoC):
-    def __init__(self, lanes=8, words_per_lane=2048, with_match=True, **kwargs):
+    def __init__(self, lanes=8, words_per_lane=2048, with_match=False, **kwargs):
         BaseSoC.__init__(self,
             variant            = "cle-101",     # LiteFury-equivalent XC7A100T
             with_pcie          = True,
@@ -120,7 +120,9 @@ def main():
     parser.add_target_argument("--sys-clk-freq",   default=125e6, type=float, help="System clock frequency.")
     parser.add_target_argument("--lanes",          default=8,     type=int,   help="Engine lanes (power of two).")
     parser.add_target_argument("--words-per-lane", default=2048,  type=int,   help="64-bit words per lane (power of two).")
-    parser.add_target_argument("--no-match",       action="store_true",       help="Leave out the MATCH unit.")
+    # MATCH at 8 lanes uses ~65% of the XC7A100T's LUTs and did not route in the
+    # open-source flow (pcie/README.md, Resources), so it is opt-in.
+    parser.add_target_argument("--match",          action="store_true",       help="Include the MATCH unit (large).")
     parser.add_target_argument("--driver",         action="store_true",       help="Generate the PCIe driver.")
     # The host drives the engine over PCIe; no soft CPU or UART is needed.
     parser.set_defaults(cpu_type="None", no_uart=True)
@@ -130,7 +132,7 @@ def main():
         sys_clk_freq   = args.sys_clk_freq,
         lanes          = args.lanes,
         words_per_lane = args.words_per_lane,
-        with_match     = not args.no_match,
+        with_match     = args.match,
         **parser.soc_argdict)
     builder = Builder(soc, **parser.builder_argdict)
     if args.build:
