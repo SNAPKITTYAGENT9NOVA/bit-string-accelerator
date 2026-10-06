@@ -30,7 +30,8 @@ CSRs (BAR0): word access to the bit store, status, counters, geometry, format ve
 ## Operations
 
 One 16-byte descriptor per operation (format version 3, readable from the
-`version` CSR; the `features` CSR says whether the MATCH unit is built in):
+`version` CSR; the `features` CSR says whether the MATCH unit is built in,
+and with how many units):
 
 | Bits | Field |
 |---|---|
@@ -155,13 +156,14 @@ Coverage is counted from what was executed, not from the generator's intent.
 
 | Check | Result |
 |---|---|
-| Engine, 2×4, 4×16, 8×16, 8×512 lanes × words, seeds 1 and 7, plus 16×8 and a build without MATCH; 4,000 operations each (Icarus) | 0 mismatches. 8,068–24,425 checks per run; up to 1.41 M reference-core operations per run. |
+| Engine, 2×4, 4×16, 8×16, 8×512 lanes × words, seeds 1 and 7, plus 16×8, a build without MATCH, and MATCH with fewer units than lanes (4 lanes/1 unit, 8 lanes/2 units); 4,000 operations each (Icarus) | 0 mismatches. 8,068–24,425 checks per run; up to 1.41 M reference-core operations per run. |
 | Engine under Verilator | 0 mismatches, all coverage goals met |
 | PCIe core, 3,200 descriptors including 469 range operations (Icarus) | 9,897 checks, 0 failures |
 | Host program against the Verilated core (`make cosim`) | 200,704 descriptors (12,855 range, 1,732 valid MATCH) and 50,176 (27,821 range, 3,726 valid MATCH): 0 mismatches |
 | Host program at the LiteFury geometry, 8×2,048 (`make perf`) | 20,480 descriptors (4,876 range, 676 valid MATCH): 0 mismatches; 16,384 words checked |
 | Injected faults, range unit | 22/22 detected against the final testbench. Examples: mask edges, rotation direction, BULK bound and last step, src/dst base, barrier in either direction, FIND lane order and first hit, overlap check, dry run, ANDN, fills of partial words, counting after instead of before, range end bound, missing dst read, stale value on an error result. |
 | Injected faults, MATCH and the pipelined front end | 18/18 detected: inverted compare, wrong neighbour lane, lost previous-step word, validity not shifted by a word, mask top bit ignored, last step missing, index not shifted, pattern and mask swapped, result kind ignored, pattern word bound, empty match range, pattern not awaited; skid buffer ignoring reorder space or overfilling, wrong skid slot, barrier counter, stale queue-full flag, write register not cleared |
+| Injected faults, MATCH sub-steps (`MATCH_LANES` < `LANES`) | 6/6 detected: unit word ignoring the sub-step, mask ignoring it, result index ignoring it, group ending before its last sub-step, previous group's word from the wrong lane, sub-step counter not reset |
 | Injected faults, PCIe core | 9/9 detected (result order in a beat, value position, error/bit swap, opcode bit 3, len and src fields, fn/dry fields, beat size, counter step) |
 | Injected faults, host co-simulation | FIND lane order, BULK rotation and fill count all detected (780–9,386 mismatches) |
 | Lane mapping (`formal/lane_map.mlw`) | 58/58 goals proved by Z3 |
@@ -211,8 +213,9 @@ make -C host LITEPCIE=../build/litefury/driver
 ./host/cpu_bench                             # the NUC's CPU on the same work
 ```
 
-The SoC leaves out the MATCH unit by default; `litex/bitacc_litefury.py --match`
-includes it (see Resources for why it is opt-in).
+The SoC leaves out the MATCH unit by default. `litex/bitacc_litefury.py --match`
+includes it with 2 units; `--match-lanes N` changes the unit count. See
+Resources for the sizes.
 
 LiteX supports the LiteFury as the SQRL Acorn CLE-101, which litex-boards
 documents as equivalent (`litex_boards/platforms/sqrl_acorn.py`). The same
@@ -239,70 +242,83 @@ Point `NEXTPNR` and `CHIPDB` at them and run `make timing`.
 
 | Design | Fmax (nextpnr-xilinx) | LUTs (Yosys) | Flip-flops | RAMB36 |
 |---|---|---|---|---|
-| Before this change (range operations only) | 72.1 MHz | 9,948 | 2,670 | 32 |
-| 8 lanes, without MATCH | 79.6 MHz | 9,776 (+50 RAM32M) | 5,410 | 32 |
-| 8 lanes, with MATCH | did not route: stopped after 52 minutes, still in the router's first pass with 63,127 overused wires | 41,446 (+50 RAM32M) | 5,615 | 32 |
+| Before the timing work (range operations only) | 72.1 MHz | 9,948 | 2,670 | 32 |
+| 8 lanes, no MATCH | 88.3 MHz | 9,879 (+50 RAM32M) | 5,505 | 32 |
+| 8 lanes, MATCH with 2 units (`MATCH_LANES = 2`) | 83.6 MHz | 18,447 (+50 RAM32M) | 6,168 | 32 |
+| 8 lanes, MATCH with 8 units | did not route: stopped after 52 minutes in the router's first pass, 63,127 overused wires | 41,446 (+50 RAM32M) | 5,615 | 32 |
+| 16 lanes × 1,024 words, no MATCH | 70.8 MHz | 19,864 (+74 RAM32M) | 9,254 | 32 |
 
-**It does not meet 125 MHz in this flow.** The first run found real
+**No configuration meets 125 MHz in this flow.** The runs found real
 structural paths, which are fixed:
 - the descriptor decode, a 64-bit add then compares in one cycle;
 - the combinational ready chain from dispatch back to the descriptor
-  source, through a 250-flip-flop clock enable;
+  source;
 - block-RAM ports driven through logic;
 - 64-deep popcount and lowest-set-bit chains;
-- the BULK rotation select fanned out to every lane, and its crossbar
-  ending in logic.
+- cross-lane crossbars ending in logic;
+- control registers with about 1,000 loads each.
 
 The fixes:
 - registered sums;
-- a 2-entry skid buffer with registered ready;
+- a 2-entry circular skid buffer with registered ready, so taking a
+  descriptor only moves a read pointer;
 - a registered outstanding-operation counter for the barrier;
 - registered queue-full flags;
 - registered addresses, write ports and masks;
 - balanced trees;
 - crossbars that end in registers;
-- a multi-cycle MATCH set-up.
+- multi-cycle range and MATCH set-up;
+- per-lane copies of the step's control registers and per-unit copies of
+  the MATCH pattern and mask. These carry `keep`; without it Yosys merges
+  them back.
 
-What remains is mostly routing. The current worst path has 1.2 ns of logic
-and 11.4 ns of routing, with single nets spanning about 50 tiles, between
-the dispatch decision and the skid buffer's write muxes. nextpnr-xilinx's
-placer is known to be weaker than Vivado's, so these numbers are
-pessimistic, but by how much is unknown. If Vivado also misses 125 MHz:
-- the next step is to make the decode stage a buffer too, so the dispatch
-  decision only drives local registers;
-- running the engine at a lower clock from its own clock domain is the
-  fallback.
+What remains is mostly routing between lanes that the placer spreads over
+the chip:
+- **8 lanes:** about 1.7 ns of logic and 9.6 ns of routing, from a lane's
+  result word through the popcount tree. With MATCH it is 0.8 ns of logic
+  and 11.1 ns of routing, from a unit's window register into its compare.
+- **16 lanes:** 0.6 ns of logic and 13.6 ns of routing, on the BULK
+  crossbar. Its lanes are far apart.
+
+nextpnr-xilinx's placer is weaker than Vivado's, which also replicates
+high-fanout drivers and pipelines placement-critical nets itself. So these
+numbers are pessimistic, but by how much is unknown. If Vivado also misses
+125 MHz:
+- run the engine from its own slower clock (LitePCIe stays at 125 MHz);
+- or add a pipeline stage after the popcount.
 
 ## Resources (estimate)
 
-Yosys `synth_xilinx -abc9 -nowidelut` (the flow above), 128 KiB bit store:
+Yosys `synth_xilinx -abc9 -nowidelut` (the flow above), 128 KiB bit store,
+engine and PCIe core only (no LitePCIe, no DDR3 controller):
 
-| Lanes × words per lane | MATCH | LUTs | of XC7A100T (63,400) | Flip-flops | RAMB36 |
+| Lanes × words per lane | MATCH units | LUTs | of XC7A100T (63,400) | Flip-flops | RAMB36 |
 |---|---|---|---|---|---|
-| 8 × 2,048 (default) | no | 9,776 | 15% | 5,410 | 32 |
-| 8 × 2,048 (default) | yes | 41,446 | 65% | 5,615 | 32 |
+| 8 × 2,048 (default) | none | 9,879 | 16% | 5,505 | 32 |
+| 8 × 2,048 | 2 | 18,447 | 29% | 6,168 | 32 |
+| 8 × 2,048 | 8 | 41,446 | 65% | 5,615 | 32 |
+| 16 × 1,024 | none | 19,864 | 31% | 9,254 | 32 |
 
-The matcher checks 64 positions × 64 mask bits per lane per cycle. That
-costs about 4,000 LUTs per lane (31,700 for 8 lanes), and it is what makes
-MATCH fast. **At 8 lanes the design with MATCH is too big for this FPGA in
-practice.** It uses 65% of the LUTs before LitePCIe and the DDR3
-controller, and in the open-source flow it is too congested to route. The
-next step is to give the matcher fewer lanes than the rest of the engine
-(for example 2 to 4 matcher lanes, MATCH running at 128 to 256 positions
-per cycle), or to check fewer positions per lane per cycle. That is not
-implemented yet; until then the LiteX build leaves MATCH out unless given `--match`. 16 lanes
-are verified functionally (the 16×8 regression run). Their area and timing
-at the LiteFury geometry haven't been measured in this round; the previous
-round's estimate was about 21,000 LUTs without MATCH.
+A MATCH unit checks 64 positions × 64 mask bits per cycle and costs about
+4,000 LUTs. `MATCH_LANES` sets the number of units independently of
+`LANES`, which must be a multiple of it. With fewer units, each group of
+`LANES` words is matched in `LANES / MATCH_LANES` sub-steps. 8 units do not
+fit in practice; **2 units are the recommended LiteFury setting**, and the
+LiteX default when `--match` is given (`--match-lanes N` changes it).
+
+16 lanes double COUNT/FIND/BULK throughput per cycle, at twice the LUTs and
+a lower clock in this flow: 70.8 against 88.3 MHz. At these clocks that is
+still about 1.6× the 8-lane throughput.
 
 ## Performance
 
 Cycle counts are measured by `make perf`: the host program's `bench`
-against the Verilated core at 8 × 2,048. The DMA stand-in offers one
-descriptor and takes one result beat per cycle, with no PCIe latency. The
-counts are therefore the engine's own throughput. Rates are given at
-125 MHz, which this design doesn't reach in the open-source flow (see
-Timing). At the 79.6 MHz measured there, they scale by 0.64.
+against the Verilated core at 8 × 2,048 with 2 MATCH units. The DMA
+stand-in offers one descriptor and takes one result beat per cycle, with no
+PCIe latency. The counts are therefore the engine's own throughput. Rates
+are given at 125 MHz, the target; this design doesn't reach it in the
+open-source flow (see Timing). At the 83.6 MHz measured there for this
+configuration, they scale by 0.67.
 
 | Descriptor | Cycles each | Work | At 125 MHz |
 |---|---|---|---|
@@ -310,26 +326,33 @@ Timing). At the 79.6 MHz measured there, they scale by 0.64.
 | COUNT, 1 Mbit | 2,057 | 1,048,576 bits | 16.5 µs, 64 Gbit/s |
 | FIND1, 1 Mbit, not found | 2,057 | 1,048,576 bits | 16.5 µs |
 | BULK XOR (dry), 8,192 words | 2,057 | 524,288 bits of dst | 16.5 µs, 32 Gbit/s of dst |
-| MATCH, 16-bit pattern, 1 M positions | 2,066 | 1,048,576 positions | 16.5 µs, 63 G positions/s |
+| MATCH (2 units), 16-bit pattern, 1 M positions | 8,213 | 1,048,576 positions | 65.7 µs, 16 G positions/s |
+
+With 8 units MATCH took 2,066 cycles (63 G positions/s at 125 MHz), but that
+configuration doesn't fit (see Resources).
 
 **Against the CPU.** `host/cpu_bench.c` does the same work on the host:
 popcount loops, and a MATCH that compilers vectorize (checked against a
 naive one). Measured on this repository's build machine (Intel Xeon VM,
 2.8 GHz, 4 vCPUs, AVX-512, `-O3 -march=native`), 128 KiB store:
 
-| Work (128 KiB store) | CPU, 1 thread | CPU, 4 threads (total) | Card, 8 lanes at 125 MHz |
-|---|---|---|---|
-| COUNT, 1 Mbit | 10.5 µs (100 Gbit/s) | 210 Gbit/s | 16.5 µs (64 Gbit/s) |
-| XOR + count, 2 × 64 KiB | 8.9 µs (59 Gbit/s of dst) | 217 Gbit/s | 16.5 µs (32 Gbit/s of dst) |
-| MATCH, 16-bit pattern | 2.0 G positions/s | 7.0 G positions/s | 63 G positions/s |
-| MATCH, 64-bit pattern | 4.0 G positions/s | 8.9 G positions/s | 63 G positions/s |
+| Work (128 KiB store) | CPU, 1 thread | CPU, 4 threads (total) | Card at 125 MHz | Card at 83.6 MHz |
+|---|---|---|---|---|
+| COUNT, 1 Mbit | 10.5 µs (100 Gbit/s) | 210 Gbit/s | 64 Gbit/s | 43 Gbit/s |
+| XOR + count, 2 × 64 KiB | 8.9 µs (59 Gbit/s of dst) | 217 Gbit/s | 32 Gbit/s | 21 Gbit/s |
+| MATCH, 16-bit pattern | 2.0 G positions/s | 7.0 G positions/s | 16 G positions/s (2 units) | 10.7 G positions/s |
+| MATCH, 64-bit pattern | 4.0 G positions/s | 8.9 G positions/s | 16 G positions/s (2 units) | 10.7 G positions/s |
 
-For COUNT and BULK the card is slower than one core, as before. For MATCH
-the 8-lane card would be about 7× this machine's 4 threads at 125 MHz.
-That design doesn't fit and route, though (see Resources). A 2-lane matcher
-(about 16 G positions/s at 125 MHz) would still be about 2× the 4 threads,
-and a 4-lane one about 4×. These are estimates from cycle counts, not
-measurements on hardware.
+**Verdict:**
+- **COUNT and BULK:** the card is slower than one CPU core.
+- **MATCH with 2 units:**
+  - at 125 MHz, about 2× this machine's 4 threads and 4–8× one thread;
+  - at the 83.6 MHz of the open-source estimate, about 1.2–1.5× the 4
+    threads.
+
+  It is the only operation where the card is expected to beat the CPU, and
+  only by a small margin on a 4-core host. These are cycle counts times an
+  assumed clock, not hardware measurements.
 
 I haven't measured the NUC; run `host/cpu_bench` there to compare with its
 real CPU.

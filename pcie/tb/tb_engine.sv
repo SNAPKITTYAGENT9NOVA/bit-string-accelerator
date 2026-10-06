@@ -23,10 +23,14 @@ module tb_engine;
 `ifndef MATCH
   `define MATCH 1
 `endif
+`ifndef MLANES
+  `define MLANES `LANES
+`endif
   localparam int LANES = `LANES;
   localparam int WPL   = `WPL;
   localparam int WORDS = LANES * WPL;
   localparam bit WITH_MATCH = `MATCH;
+  localparam int MLANES = `MLANES;          // MATCH units
   localparam int MAXOPS = 20000;
 
   logic clk = 1'b0, reset = 1'b1;
@@ -139,7 +143,7 @@ module tb_engine;
   logic [63:0] host_wdata = '0, host_rdata;
   logic        idle;
 
-  bitacc_engine #(.LANES(LANES), .WORDS_PER_LANE(WPL), .WITH_MATCH(WITH_MATCH)) dut (.*);
+  bitacc_engine #(.LANES(LANES), .WORDS_PER_LANE(WPL), .WITH_MATCH(WITH_MATCH), .MATCH_LANES(MLANES)) dut (.*);
 
   logic        e_err_r [MAXOPS];
   logic        e_bit_r [MAXOPS];

@@ -529,9 +529,10 @@ static int info(void)
     uint32_t lanes, wpl;
     geometry(fd, &lanes, &wpl);
     uint32_t s = status(fd);
-    printf("format %u, MATCH %s, lanes %u, words per lane %u, idle %u, ops accepted %u, results sent %u\n",
+    uint32_t f = rd(fd, CSR_BITACC_FEATURES_ADDR);
+    printf("format %u, MATCH units %u, lanes %u, words per lane %u, idle %u, ops accepted %u, results sent %u\n",
            rd(fd, CSR_BITACC_VERSION_ADDR),
-           (rd(fd, CSR_BITACC_FEATURES_ADDR) >> CSR_BITACC_FEATURES_MATCH_OFFSET) & 1 ? "yes" : "no",
+           (f >> CSR_BITACC_FEATURES_MATCH_OFFSET) & 1 ? (f >> CSR_BITACC_FEATURES_MATCH_LANES_OFFSET) & 0xff : 0,
            lanes, wpl, !!(s & ST_IDLE),
            rd(fd, CSR_BITACC_OPS_ACCEPTED_ADDR), rd(fd, CSR_BITACC_RESULTS_SENT_ADDR));
     close(fd);

@@ -39,7 +39,7 @@ RTL = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "rtl")
 class BitAcc(LiteXModule):
     """bitacc_pcie_core with CSR access; connect dma_source/dma_sink to a LitePCIe DMA."""
 
-    def __init__(self, platform, dma, lanes=8, words_per_lane=2048, with_match=True):
+    def __init__(self, platform, dma, lanes=8, words_per_lane=2048, with_match=True, match_lanes=2):
         word_bits = (lanes * words_per_lane - 1).bit_length()
 
         # Host word access.
@@ -65,6 +65,8 @@ class BitAcc(LiteXModule):
             description="Descriptor/result format version (see bitacc_pcie_core.sv).")
         self.features     = CSRStatus(fields=[
             CSRField("match", size=1, offset=0, reset=int(with_match), description="MATCH unit present."),
+            CSRField("match_lanes", size=8, offset=8, reset=match_lanes if with_match else 0,
+                     description="MATCH units (64 positions per cycle each)."),
         ])
         self.comb += [
             self.config.fields.lanes.eq(lanes),
@@ -75,6 +77,7 @@ class BitAcc(LiteXModule):
             p_LANES          = lanes,
             p_WORDS_PER_LANE = words_per_lane,
             p_WITH_MATCH     = int(with_match),
+            p_MATCH_LANES    = match_lanes,
             i_clk            = ClockSignal("sys"),
             i_reset          = ResetSignal("sys"),
             # host -> card
@@ -103,14 +106,14 @@ class BitAcc(LiteXModule):
 
 
 class BitAccSoC(BaseSoC):
-    def __init__(self, lanes=8, words_per_lane=2048, with_match=False, **kwargs):
+    def __init__(self, lanes=8, words_per_lane=2048, with_match=False, match_lanes=2, **kwargs):
         BaseSoC.__init__(self,
             variant            = "cle-101",     # LiteFury-equivalent XC7A100T
             with_pcie          = True,
             pcie_ndmas         = 1,
             **kwargs)
         self.bitacc = BitAcc(self.platform, self.pcie_dma0,
-            lanes=lanes, words_per_lane=words_per_lane, with_match=with_match)
+            lanes=lanes, words_per_lane=words_per_lane, with_match=with_match, match_lanes=match_lanes)
 
 
 def main():
@@ -122,7 +125,8 @@ def main():
     parser.add_target_argument("--words-per-lane", default=2048,  type=int,   help="64-bit words per lane (power of two).")
     # MATCH at 8 lanes uses ~65% of the XC7A100T's LUTs and did not route in the
     # open-source flow (pcie/README.md, Resources), so it is opt-in.
-    parser.add_target_argument("--match",          action="store_true",       help="Include the MATCH unit (large).")
+    parser.add_target_argument("--match",          action="store_true",       help="Include the MATCH unit.")
+    parser.add_target_argument("--match-lanes",    default=2,     type=int,   help="MATCH units (power of two, <= lanes; ~4,000 LUTs each).")
     parser.add_target_argument("--driver",         action="store_true",       help="Generate the PCIe driver.")
     # The host drives the engine over PCIe; no soft CPU or UART is needed.
     parser.set_defaults(cpu_type="None", no_uart=True)
@@ -133,6 +137,7 @@ def main():
         lanes          = args.lanes,
         words_per_lane = args.words_per_lane,
         with_match     = args.match,
+        match_lanes    = args.match_lanes,
         **parser.soc_argdict)
     builder = Builder(soc, **parser.builder_argdict)
     if args.build:

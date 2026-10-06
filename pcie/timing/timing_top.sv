@@ -7,7 +7,8 @@
 module timing_top #(
   parameter int LANES          = 8,
   parameter int WORDS_PER_LANE = 2048,
-  parameter bit WITH_MATCH     = 1'b1
+  parameter bit WITH_MATCH     = 1'b1,
+  parameter int MATCH_LANES    = LANES
 )(
   input  logic       clk,
   input  logic       rst,
@@ -30,7 +31,8 @@ module timing_top #(
   logic [63:0]  host_rdata;
   logic [31:0]  ops_accepted, results_sent;
 
-  bitacc_pcie_core #(.LANES(LANES), .WORDS_PER_LANE(WORDS_PER_LANE), .WITH_MATCH(WITH_MATCH)) core (
+  bitacc_pcie_core #(.LANES(LANES), .WORDS_PER_LANE(WORDS_PER_LANE), .WITH_MATCH(WITH_MATCH),
+                   .MATCH_LANES(MATCH_LANES)) core (
     .clk, .reset(r_rst),
     .in_valid, .in_ready, .in_data(sh[127:0]),
     .out_valid, .out_ready, .out_data,

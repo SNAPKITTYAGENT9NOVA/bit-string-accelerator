@@ -38,7 +38,8 @@ DRIVER  := $(SOC_DIR)/driver
 GEOMETRIES := 2x4 4x16 8x16 8x512
 SEEDS      := 1 7
 TB_INC     := tb/gold_ops.svh tb/range_stim.svh
-# plus 16 lanes, and a build without the MATCH unit (opcode 15 must be an error)
+# plus 16 lanes, a build without the MATCH unit (opcode 15 must be an error), and
+# matchers with fewer units than lanes (run-ml-<lanes>x<words>-<units>)
 ENGINE_RUNS := $(foreach g,$(GEOMETRIES),$(foreach s,$(SEEDS),run-$(g)-$(s))) run-16x8-1
 
 # $(call vvp_check,command,log): run, show the summary, fail unless exit 0 and PASS.
@@ -47,7 +48,7 @@ $(1) > $(2) 2>&1; rc=$$?; grep -E '^(stimulus|range coverage|match coverage|chec
   test $$rc -eq 0 && grep -q '^PASS' $(2)
 endef
 
-.PHONY: all lint sim sim-engine sim-core sim-verilator soc cosim perf timing bitstream clean $(ENGINE_RUNS) run-nomatch
+.PHONY: all lint sim sim-engine sim-core sim-verilator soc cosim perf timing bitstream clean $(ENGINE_RUNS) run-nomatch $(ML_RUNS)
 .DEFAULT_GOAL := all
 all: lint sim sim-verilator
 
@@ -57,7 +58,17 @@ lint:
 
 sim: sim-engine sim-core
 
-sim-engine: $(ENGINE_RUNS) run-nomatch
+ML_RUNS := run-ml-4x16-1 run-ml-8x16-2
+sim-engine: $(ENGINE_RUNS) run-nomatch $(ML_RUNS)
+
+$(ML_RUNS): run-ml-%: $(BUILD)/tb_ml_%.vvp
+	@echo "engine $* (lanes x words - MATCH units)"
+	@$(call vvp_check,$(VVP) -n $< +seed=3 +ops=$(OPS),$(BUILD)/run-ml-$*.log)
+
+$(BUILD)/tb_ml_%.vvp: $(REF) $(ENGINE) tb/tb_engine.sv $(TB_INC)
+	@mkdir -p $(BUILD)
+	c=$*; g=$${c%-*}; m=$${c#*-}; \
+	$(IVERILOG) -g2012 -Itb -DLANES=$${g%x*} -DWPL=$${g#*x} -DMLANES=$$m -o $@ $(REF) $(ENGINE) tb/tb_engine.sv
 
 # run-<lanes>x<words per lane>-<seed>
 .SECONDEXPANSION:
@@ -94,15 +105,15 @@ sim-verilator:
 soc:
 	cd litex && $(PYTHON) bitacc_litefury.py --driver --output-dir $(SOC_DIR)
 
-# $(call cosim_build,dir,lanes,words per lane): host program + Verilated core + mock.
+# $(call cosim_build,dir,lanes,words per lane[,MATCH units]): host program + Verilated core + mock.
 define cosim_build
 	@test -d $(DRIVER) || { echo "run 'make soc' first"; exit 1; }
 	@mkdir -p $(1)
 	cc -O2 -Wall -Wextra -Werror -I$(DRIVER)/user/liblitepcie -I$(DRIVER)/kernel \
 	  -c -o $(abspath $(1))/bitacc_pcie.o host/bitacc_pcie.c
 	$(VERILATOR) --cc --exe --build -O2 --timescale 1ns/1ps -Wno-fatal -Wno-lint \
-	  -GLANES=$(2) -GWORDS_PER_LANE=$(3) --top-module bitacc_pcie_core -Mdir $(1)/obj \
-	  -CFLAGS "-I$(DRIVER)/user/liblitepcie -I$(DRIVER)/kernel -DMOCK_LANES=$(2) -DMOCK_WPL=$(3)" \
+	  -GLANES=$(2) -GWORDS_PER_LANE=$(3) $(if $(4),-GMATCH_LANES=$(4)) --top-module bitacc_pcie_core -Mdir $(1)/obj \
+	  -CFLAGS "-I$(DRIVER)/user/liblitepcie -I$(DRIVER)/kernel -DMOCK_LANES=$(2) -DMOCK_WPL=$(3) $(if $(4),-DMOCK_MATCH_LANES=$(4))" \
 	  -LDFLAGS "$(abspath $(1))/bitacc_pcie.o" \
 	  $(ENGINE) $(CORE) $(abspath host/sim/mock_litepcie.cpp) -o bitacc_pcie_cosim >/dev/null
 endef
@@ -114,21 +125,23 @@ cosim:
 	$(BUILD)/cosim/obj/bitacc_pcie_cosim selftest 200000 1 5
 	$(BUILD)/cosim/obj/bitacc_pcie_cosim selftest 50000 9 50
 
+# The LiteFury configuration with MATCH: 8 lanes x 2048 words, 2 MATCH units.
 # Fails if a bench needs more cycles per descriptor than the design intends:
-# single-bit 1 (plus 2%), COUNT/FIND/MATCH over 16384 words 16384/8 steps of
-# 1 cycle, BULK over 8192 words 8192/8 steps of 2 cycles (plus 1% and a fixed
-# allowance for pipeline fill and the MATCH pattern load).
+# single-bit 1 (plus 2%), COUNT/FIND over 16384 words 16384/8 steps of 1
+# cycle, BULK over 8192 words 8192/8 steps of 2 cycles, MATCH over 16384
+# words 16384/2 sub-steps of 1 cycle (plus 1% and a fixed allowance for
+# pipeline fill and the MATCH pattern load).
 perf:
-	$(call cosim_build,$(BUILD)/perf,8,2048)
+	$(call cosim_build,$(BUILD)/perf,8,2048,2)
 	$(BUILD)/perf/obj/bitacc_pcie_cosim selftest 20000 3 20
-	@for kl in get:1.02 count:2084 find:2084 xor:2084 match:2084; do \
+	@for kl in get:1.02 count:2084 find:2084 xor:2084 match:8300; do \
 	  k=$${kl%:*}; limit=$${kl#*:}; n=$$( [ $$k = get ] && echo 200000 || echo 2048 ); \
 	  out=$$($(BUILD)/perf/obj/bitacc_pcie_cosim bench $$k $$n 2>&1) || { echo "$$out"; exit 1; }; \
 	  echo "$$out" | grep -E '^(bench|mock)'; \
 	  echo "$$out" | awk -v l=$$limit '/^mock:/ { c = $$(NF-1) } END { if (c == "" || c + 0 > l) { print "cycles/descriptor " c " above " l; exit 1 } }' || exit 1; \
 	done
 
-TIMING_CONFIGS ?= 8:2048:1 8:2048:0
+TIMING_CONFIGS ?= 8:2048:1:2 8:2048:0
 timing:
 	@set -e; cd timing; for c in $(TIMING_CONFIGS); do \
 	  echo "== $$c (lanes:words per lane:MATCH)"; ./run.sh $$(echo $$c | tr ':' ' '); done
