@@ -16,9 +16,13 @@ module tb_pcie_core;
 `ifndef WPL
   `define WPL 16
 `endif
+`ifndef MATCH
+  `define MATCH 1
+`endif
   localparam int LANES = `LANES;
   localparam int WPL   = `WPL;
   localparam int WORDS = LANES * WPL;
+  localparam bit WITH_MATCH = `MATCH;
   localparam int MAXOPS = 16384;
 
   logic clk = 1'b0, reset = 1'b1;
@@ -120,7 +124,7 @@ module tb_pcie_core;
   logic         idle;
   logic [31:0]  ops_accepted, results_sent;
 
-  bitacc_pcie_core #(.LANES(LANES), .WORDS_PER_LANE(WPL)) dut (.*);
+  bitacc_pcie_core #(.LANES(LANES), .WORDS_PER_LANE(WPL), .WITH_MATCH(WITH_MATCH)) dut (.*);
 
   // result sink: random backpressure plus a long stall every 1500 cycles
   logic [63:0] r_res [MAXOPS];
@@ -184,6 +188,7 @@ module tb_pcie_core;
 
   // ------------------------------------------------------------ main
   logic [63:0] v;
+  integer pend_i = 0;
   integer kind, n_hot = 0, n_any = 0, n_past = 0, n_wrap = 0, n_undef = 0, n_range = 0;
   initial begin
     if (!$value$plusargs("seed=%d", seed)) seed = 3;
@@ -196,9 +201,18 @@ module tb_pcie_core;
       s_op[n] = (rnd(12) == 0) ? 4'(5 + rnd(3)) : 4'(rnd(5));
       s_len[n] = '0; s_src[n] = '0; s_fn[n] = '0; s_dry[n] = 1'b0;
       if (s_op[n] > 4'd4) n_undef++;
-      if (kind >= 40 && rnd(3) == 0) begin
+      if (pend_i < rs_q_n) begin                     // rest of a MATCH sequence
         n_range++;
-        gen_range(s_op[n], s_bit[n], s_len[n], s_src[n], s_fn[n], s_dry[n]);
+        s_op[n] = rs_q_op[pend_i]; s_bit[n] = rs_q_a[pend_i]; s_len[n] = rs_q_len[pend_i];
+        s_src[n] = rs_q_src[pend_i]; s_fn[n] = rs_q_fn[pend_i]; pend_i++;
+      end else if (kind >= 40 && rnd(3) == 0) begin
+        n_range++;
+        if (rnd(4) == 0) begin
+          gen_match_seq();
+          s_op[n] = rs_q_op[0]; s_bit[n] = rs_q_a[0]; s_len[n] = rs_q_len[0];
+          s_src[n] = rs_q_src[0]; s_fn[n] = rs_q_fn[0]; pend_i = 1;
+        end else
+          gen_range(s_op[n], s_bit[n], s_len[n], s_src[n], s_fn[n], s_dry[n]);
       end else if (kind < 40) begin n_hot++;  s_bit[n] = 64'(rnd(4) * LANES) * 64 + rnd(64); end
       else if (kind < 80) begin n_any++; s_bit[n] = rnd(WORDS * 64); end
       else if (kind < 95) begin n_past++; s_bit[n] = WORDS * 64 + rnd(1024); end

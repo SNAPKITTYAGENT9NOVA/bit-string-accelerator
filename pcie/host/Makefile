@@ -16,6 +16,10 @@ bitacc_pcie.o: bitacc_pcie.c
 litepcie_%.o: $(LIB)/litepcie_%.c
 	$(CC) $(CFLAGS) $(INC) -c -o $@ $<
 
+# CPU baseline for the range operations (no driver needed).
+cpu_bench: cpu_bench.c
+	$(CC) -O3 -march=native -Wall -Wextra -Werror -o $@ $< -lpthread
+
 clean:
-	rm -f bitacc_pcie *.o
+	rm -f bitacc_pcie cpu_bench *.o
 .PHONY: clean

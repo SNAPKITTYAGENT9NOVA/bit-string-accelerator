@@ -6,7 +6,7 @@
  *
  *   bitacc_pcie [-c /dev/litepcie0] info
  *   bitacc_pcie [-c /dev/litepcie0] selftest [operations] [seed] [range-percent]
- *   bitacc_pcie [-c /dev/litepcie0] bench get|count|find|xor [descriptors]
+ *   bitacc_pcie [-c /dev/litepcie0] bench get|count|find|xor|match [descriptors]
  *
  * selftest loads random data into the whole bit store (CSRs), streams random
  * descriptors (single-bit and range operations) through the DMA reader, checks
@@ -20,8 +20,9 @@
  *   count  COUNT over the whole bit store
  *   find   FIND1 over the whole bit store, which bench clears first (not found)
  *   xor    BULK XOR, dry run, of the lower half of the store with the upper half
+ *   match  MATCH (count) of a 16-bit pattern over the whole bit store
  *
- * Descriptor (16 bytes, little-endian), format version 2:
+ * Descriptor (16 bytes, little-endian), format version 3:
  *   [63:0] a  [67:64] op  [68] dry  [71:69] fn  [103:72] len  [127:104] src
  * Result (8 bytes, little-endian): [7:0] 0xA0 | error << 1 | bit, [63:8] value.
  * Semantics: pcie/rtl/bitacc_engine.sv. The DMA moves DMA_BUFFER_SIZE bytes
@@ -39,7 +40,7 @@
 
 #include "liblitepcie.h"
 
-#define FORMAT_VERSION 2
+#define FORMAT_VERSION 3
 #define DESC_BYTES 16
 #define RESULT_BYTES 8
 #define DESCS_PER_BUFFER (DMA_BUFFER_SIZE / DESC_BYTES)
@@ -48,7 +49,7 @@
 #define RUN_QUANTUM (DESCS_PER_BUFFER > RESULTS_PER_BUFFER ? DESCS_PER_BUFFER : RESULTS_PER_BUFFER)
 
 enum { OP_GET, OP_TEST, OP_SET, OP_CLEAR, OP_TOGGLE, OP_NOP = 7,
-       OP_COUNT = 8, OP_FIND1, OP_FIND0, OP_SETR, OP_CLEARR, OP_FLIPR, OP_BULK };
+       OP_COUNT = 8, OP_FIND1, OP_FIND0, OP_SETR, OP_CLEARR, OP_FLIPR, OP_BULK, OP_MATCH };
 enum { FN_COPY, FN_AND, FN_OR, FN_XOR, FN_ANDN };
 #define RESULT_ERROR 0xA2ull
 
@@ -56,10 +57,11 @@ struct desc {
     uint64_t a;          /* bit address, or dst word (BULK) */
     uint8_t  op, fn, dry;
     uint32_t len;        /* bits, or words (BULK) */
-    uint32_t src;        /* src word (BULK), 24 bits */
+    uint32_t src;        /* src word (BULK), pattern word (MATCH; mask in src + 1), 24 bits */
 };
 
 static const char *device = "/dev/litepcie0";
+static int has_match;    /* gateware has the MATCH unit (features CSR) */
 
 /* ---------------------------------------------------------------- CSRs */
 static uint32_t rd(int fd, uint32_t a) { return litepcie_readl(fd, a); }
@@ -113,6 +115,7 @@ static int check_version(int fd)
         fprintf(stderr, "bitacc: gateware descriptor format %u, this program speaks %u\n", v, FORMAT_VERSION);
         return -1;
     }
+    has_match = (rd(fd, CSR_BITACC_FEATURES_ADDR) >> CSR_BITACC_FEATURES_MATCH_OFFSET) & 1;
     return 0;
 }
 
@@ -184,6 +187,25 @@ static uint64_t model(uint64_t *mem, uint64_t words, const struct desc *x)
         }
         return find ? result(found, found ? idx : 0) : result(cnt != 0, cnt);
     }
+    if (x->op == OP_MATCH) {
+        uint64_t a = x->a, n = x->len, p = x->src;
+        if (!has_match || x->fn > 1 || a > bits || n > bits - a || p + 2 > words)
+            return RESULT_ERROR;
+        uint64_t pat = mem[p], msk = mem[p + 1];
+        /* position s is valid if every mask bit lies inside the haystack */
+        uint64_t top = msk ? 63 - (uint64_t)__builtin_clzll(msk) : 0, cnt = 0, first = 0;
+        int found = 0;
+        for (uint64_t s = a; s < a + n && s + top < a + n; s++) {
+            uint64_t w = s >> 6, o = s & 63;
+            uint64_t lo = mem[w], hi = w + 1 < words ? mem[w + 1] : 0;
+            uint64_t win = o ? (lo >> o) | (hi << (64 - o)) : lo;
+            if (((win ^ pat) & msk) == 0) {
+                cnt++;
+                if (!found) { found = 1; first = s; }
+            }
+        }
+        return x->fn ? result(found, first) : result(cnt != 0, cnt);
+    }
     if (x->op == OP_BULK) {
         uint64_t d = x->a, s = x->src, n = x->len;
         if (x->fn > FN_ANDN || d > words || n > words - d || s > words || n > words - s)
@@ -205,7 +227,7 @@ static uint64_t model(uint64_t *mem, uint64_t words, const struct desc *x)
         }
         return result(cnt != 0, cnt);
     }
-    return RESULT_ERROR;                               /* 5-7, 15 */
+    return RESULT_ERROR;                               /* 5-7 */
 }
 
 static uint64_t rng_state;
@@ -219,7 +241,39 @@ static uint64_t rng(void)
 
 static uint64_t umin(uint64_t a, uint64_t b) { return a < b ? a : b; }
 
-static void random_desc(struct desc *x, uint64_t words, unsigned range_pct)
+/* A MATCH preceded by operations that build its mask (and sometimes its
+ * pattern) in the bit store; returns the number of descriptors (<= 4). */
+static int match_seq(struct desc *x, uint64_t words)
+{
+    uint64_t bits = words * 64, pw = rng() % (words - 1), mw = (pw + 1) * 64;
+    uint64_t lc = rng() % 100, l = lc < 45 ? rng() % 300 : lc < 95 ? rng() % (64 * umin(words, 64) + 1) : 0;
+    uint64_t a = rng() % (bits - l + 1), m = rng() % 100;
+    int n = 0;
+    memset(x, 0, 4 * sizeof *x);
+    if (m < 40) {                                      /* contiguous k bits at offset o */
+        uint64_t k = 1 + rng() % 12, o = rng() % (64 - k + 1);
+        x[n].op = OP_CLEARR; x[n].a = mw; x[n++].len = 64;
+        x[n].op = OP_SETR; x[n].a = mw + o; x[n++].len = (uint32_t)k;
+    } else if (m < 50) {                               /* zero mask */
+        x[n].op = OP_CLEARR; x[n].a = mw; x[n++].len = 64;
+    } else if (m < 65 && l >= 64) {                    /* pattern = a haystack word, full mask */
+        uint64_t h = (a + 63) / 64 + rng() % (l / 64);
+        if (h >= words) h = words - 1;
+        x[n].op = OP_BULK; x[n].fn = FN_COPY; x[n].a = pw; x[n].src = (uint32_t)h; x[n++].len = 1;
+        x[n].op = OP_SETR; x[n].a = mw; x[n++].len = 64;
+    } else if (m < 80) {                               /* two far-apart bits */
+        x[n].op = OP_CLEARR; x[n].a = mw; x[n++].len = 64;
+        x[n].op = OP_SETR; x[n].a = mw + rng() % 8; x[n++].len = 1;
+        x[n].op = OP_SETR; x[n].a = mw + 56 + rng() % 8; x[n++].len = 1;
+    }                                                  /* else the mask word as it is */
+    x[n].op = OP_MATCH; x[n].a = a; x[n].len = (uint32_t)l;
+    x[n].src = rng() % 25 == 0 ? (uint32_t)(words - 1) : (uint32_t)pw;   /* past the end: error */
+    x[n].fn = rng() % 12 == 0 ? (uint8_t)(2 + rng() % 6) : (uint8_t)(rng() % 2);
+    return n + 1;
+}
+
+/* One or more descriptors (a MATCH sequence); returns how many (<= 4). */
+static int random_desc(struct desc *x, uint64_t words, unsigned range_pct)
 {
     uint64_t bits = words * 64, r = rng();
     memset(x, 0, sizeof *x);
@@ -228,12 +282,14 @@ static void random_desc(struct desc *x, uint64_t words, unsigned range_pct)
         if (r % 10 == 0)       x->a = rng();                          /* anywhere, mostly out of range */
         else if (r % 10 == 1)  x->a = bits + rng() % 4096;            /* just past the end */
         else                   x->a = rng() % bits;
-        return;
+        return 1;
     }
     uint64_t c = rng() % 100, l;
-    if (c < 3) {                                       /* undefined */
-        x->op = 15; x->a = rng() % bits; x->len = (uint32_t)(rng() % 64);
-    } else if (c < 55) {                               /* bit range */
+    if (c < 20)
+        return match_seq(x, words);
+    if (c < 23) {                                      /* undefined */
+        x->op = (uint8_t)(5 + rng() % 3); x->a = rng() % bits; x->len = (uint32_t)(rng() % 64);
+    } else if (c < 60) {                               /* bit range */
         x->op = (uint8_t)(OP_COUNT + rng() % 6);
         uint64_t lc = rng() % 100;
         l = lc < 50 ? rng() % 130 : lc < 92 ? rng() % (64 * umin(words, 64) + 1) : lc < 96 ? 0 : bits;
@@ -259,6 +315,7 @@ static void random_desc(struct desc *x, uint64_t words, unsigned range_pct)
         }
         x->a = d;
     }
+    return 1;
 }
 
 /* ---------------------------------------------------------------- streaming */
@@ -340,20 +397,28 @@ static int selftest(uint64_t ops, uint64_t seed, unsigned range_pct)
     }
 
     /* Build descriptors and expected results (model runs in descriptor order). */
-    uint64_t n_range = 0, n_range_ok = 0;
+    uint64_t n_range = 0, n_range_ok = 0, n_match = 0, n_match_hit = 0;
     uint32_t ops_before = rd(fd, CSR_BITACC_OPS_ACCEPTED_ADDR);
+    struct desc xs[4];
+    int nx = 0, ix = 0;
     for (uint64_t n = 0; n < total; n++) {
         struct desc x;
-        if (n < ops) {
-            random_desc(&x, words, range_pct);
+        if (ix == nx && n < ops) {
+            nx = random_desc(xs, words, range_pct);
+            ix = 0;
+        }
+        if (ix < nx) {
+            x = xs[ix++];                              /* may run past ops: padding then starts later */
         } else {
             memset(&x, 0, sizeof x);
             x.op = OP_NOP;
         }
         expect[n] = model(mem, words, &x);
-        if (n < ops && x.op >= OP_COUNT) {
+        if (x.op >= OP_COUNT) {
             n_range++;
             n_range_ok += expect[n] != RESULT_ERROR;
+            n_match += x.op == OP_MATCH && expect[n] != RESULT_ERROR;
+            n_match_hit += x.op == OP_MATCH && (expect[n] & 0xFF) == 0xA1;
         }
         encode(desc + n * DESC_BYTES, &x);
     }
@@ -381,9 +446,9 @@ static int selftest(uint64_t ops, uint64_t seed, unsigned range_pct)
             fprintf(stderr, "word %" PRIu64 ": 0x%016" PRIx64 ", expected 0x%016" PRIx64 "\n", w, v, mem[w]);
     }
 
-    printf("selftest: %" PRIu64 " operations (%" PRIu64 " range, %" PRIu64 " of them valid; +%" PRIu64
-           " padding), %" PRIu64 " words checked, %" PRIu64 " mismatches\n",
-           ops, n_range, n_range_ok, total - ops, words, mismatches);
+    printf("selftest: %" PRIu64 " descriptors (%" PRIu64 " range, %" PRIu64 " of them valid, %" PRIu64
+           " valid MATCH with %" PRIu64 " hits), %" PRIu64 " words checked, %" PRIu64 " mismatches\n",
+           total, n_range, n_range_ok, n_match, n_match_hit, words, mismatches);
     if (ms > 0)
         printf("DMA phase: %.2f M descriptors/s (%" PRId64 " ms)\n", (double)total / ms / 1000.0, ms);
     rc = mismatches ? 1 : 0;
@@ -420,11 +485,15 @@ static int bench(const char *kind, uint64_t n)
         x.op = OP_FIND1; x.len = (uint32_t)(words * 64); bits_per_desc = words * 64;
         for (uint64_t w = 0; w < words; w++)
             if (word_write(fd, (uint32_t)w, 0)) goto out;
+    } else if (!strcmp(kind, "match")) {
+        if (!has_match) { fprintf(stderr, "bench: the gateware has no MATCH unit\n"); goto out; }
+        x.op = OP_MATCH; x.fn = 0; x.src = 0; x.len = (uint32_t)(words * 64); bits_per_desc = words * 64;
+        if (word_write(fd, 0, 0xBEEF) || word_write(fd, 1, 0xFFFF)) goto out;   /* 16-bit pattern */
     } else if (!strcmp(kind, "xor")) {
         x.op = OP_BULK; x.fn = FN_XOR; x.dry = 1; x.a = words / 2; x.src = 0; x.len = (uint32_t)(words / 2);
         bits_per_desc = words / 2 * 64;
     } else {
-        fprintf(stderr, "bench: unknown kind '%s' (get, count, find, xor)\n", kind);
+        fprintf(stderr, "bench: unknown kind '%s' (get, count, find, xor, match)\n", kind);
         goto out;
     }
     rng_state = 1;
@@ -460,8 +529,10 @@ static int info(void)
     uint32_t lanes, wpl;
     geometry(fd, &lanes, &wpl);
     uint32_t s = status(fd);
-    printf("format %u, lanes %u, words per lane %u, idle %u, ops accepted %u, results sent %u\n",
-           rd(fd, CSR_BITACC_VERSION_ADDR), lanes, wpl, !!(s & ST_IDLE),
+    printf("format %u, MATCH %s, lanes %u, words per lane %u, idle %u, ops accepted %u, results sent %u\n",
+           rd(fd, CSR_BITACC_VERSION_ADDR),
+           (rd(fd, CSR_BITACC_FEATURES_ADDR) >> CSR_BITACC_FEATURES_MATCH_OFFSET) & 1 ? "yes" : "no",
+           lanes, wpl, !!(s & ST_IDLE),
            rd(fd, CSR_BITACC_OPS_ACCEPTED_ADDR), rd(fd, CSR_BITACC_RESULTS_SENT_ADDR));
     close(fd);
     return 0;
@@ -484,6 +555,6 @@ int main(int argc, char **argv)
         return bench(argv[i + 1], n);
     }
     fprintf(stderr, "usage: %s [-c device] info | selftest [operations] [seed] [range-percent]"
-            " | bench get|count|find|xor [descriptors]\n", argv[0]);
+            " | bench get|count|find|xor|match [descriptors]\n", argv[0]);
     return 2;
 }

@@ -3,7 +3,8 @@
 //
 // Included inside a testbench module that provides: clk; the reference core's
 // inputs g_op_valid, g_base, g_off, g_opc and outputs g_op_ready, g_res_valid,
-// g_res_bit, g_error; WORDS (bit-store size in 64-bit words); and
+// g_res_bit, g_error; WORDS (bit-store size in 64-bit words); WITH_MATCH
+// (whether the engine under test has the MATCH unit); and
 // task check(cond, what).
 //
 // Range operations are defined as sequences of single-bit operations on the
@@ -12,15 +13,20 @@
 //   FIND1/FIND0    GET bits until one equals 1/0
 //   SETR/CLEARR/FLIPR  GET each bit (counted), then SET/CLEAR/TOGGLE it
 //   BULK           per bit: GET src, GET dst, compute, SET/CLEAR dst if it changes
+//   MATCH          GET the 64 pattern bits, the 64 mask bits and every haystack
+//                  bit; then position k matches if every mask bit j has
+//                  k + j < len and haystack[k + j] == pattern[j]
 // Which range operations are errors is a specification choice (range_error);
 // for bit ranges it is cross-checked against the reference core, which must
 // reject the last bit of every invalid non-empty range.
 
 localparam logic [2:0] G_GET = 3'd0, G_SET = 3'd2, G_CLEAR = 3'd3, G_TOGGLE = 3'd4;
 localparam logic [3:0] R_COUNT = 4'd8, R_FIND1 = 4'd9, R_FIND0 = 4'd10,
-                       R_SETR = 4'd11, R_CLEARR = 4'd12, R_FLIPR = 4'd13, R_BULK = 4'd14;
+                       R_SETR = 4'd11, R_CLEARR = 4'd12, R_FLIPR = 4'd13, R_BULK = 4'd14,
+                       R_MATCH = 4'd15;
 
 integer gold_ops_issued = 0;
+logic   gold_hay [WORDS * 64];       // MATCH haystack, as read from the reference core
 
 // One operation on the reference core.
 task automatic gold_op(input logic [63:0] base, input logic [63:0] off, input logic [2:0] op,
@@ -52,6 +58,8 @@ function automatic logic range_error(input logic [3:0] op, input logic [63:0] a,
   else if (op == R_BULK)
     range_error = fn > 3'd4 || e > words || se > words
                   || (len != 0 && {1'b0, a} != 65'(src) && {1'b0, a} < se && 65'(src) < e);
+  else if (op == R_MATCH)
+    range_error = !WITH_MATCH || fn > 3'd1 || e > (words << 6) || 65'(src) + 65'd2 > words;
   else range_error = 1'b1;
 endfunction
 
@@ -69,15 +77,17 @@ endfunction
 task automatic gold_range(input logic [3:0] op, input logic [63:0] a, input logic [31:0] len,
                           input logic [23:0] src, input logic [2:0] fn, input logic dry,
                           output logic err, output logic b, output logic [55:0] val);
-  logic x, y, r, e, done;
+  logic x, y, r, e, done, ok;
   logic [64:0] last;
-  logic [63:0] k, bitaddr, sbit;
+  logic [63:0] k, bitaddr, sbit, pat, msk, cnt, j;
   err = range_error(op, a, len, src, fn);
   b = 1'b0;
   val = '0;
   if (err) begin
     last = {1'b0, a} + 65'(len) - 65'd1;
-    if (op >= R_COUNT && op <= R_FLIPR && len != 0 && !last[64]) begin
+    if (((op >= R_COUNT && op <= R_FLIPR) || (op == R_MATCH && WITH_MATCH && fn <= 3'd1
+                                             && 65'(src) + 65'd2 <= 65'(WORDS)))
+        && len != 0 && !last[64]) begin
       gold_op(64'd0, last[63:0], G_GET, e, x);
       check(e, $sformatf("reference core rejects the last bit %h of invalid range op %0d", last[63:0], op));
     end
@@ -99,6 +109,29 @@ task automatic gold_range(input logic [3:0] op, input logic [63:0] a, input logi
       val = val + 56'(x);
       gold_bit(a + k, op == R_SETR ? G_SET : op == R_CLEARR ? G_CLEAR : G_TOGGLE, y);
     end
+  end else if (op == R_MATCH) begin
+    for (k = 0; k < 64; k++) begin
+      gold_bit((64'(src) << 6) + k, G_GET, x);       pat[k] = x;
+      gold_bit((64'(src) << 6) + 64 + k, G_GET, y);  msk[k] = y;
+    end
+    for (k = 0; k < 64'(len); k++) begin
+      gold_bit(a + k, G_GET, x);
+      gold_hay[k] = x;
+    end
+    cnt = 0; done = 1'b0;
+    for (k = 0; k < 64'(len); k++) begin
+      ok = 1'b1; j = 0;
+      while (ok && j < 64) begin
+        if (msk[j] && (k + j >= 64'(len) || gold_hay[k + j] != pat[j])) ok = 1'b0;
+        j++;
+      end
+      if (ok) begin
+        cnt++;
+        if (!done) begin done = 1'b1; val = 56'(a + k); end
+      end
+    end
+    if (fn[0]) b = done;
+    else begin val = 56'(cnt); b = cnt != 0; end
   end else begin                                   // BULK: a = dst word
     for (k = 0; k < 64'(len) * 64; k++) begin
       bitaddr = (a << 6) + k;
@@ -110,5 +143,6 @@ task automatic gold_range(input logic [3:0] op, input logic [63:0] a, input logi
       if (!dry && r != y) gold_bit(bitaddr, r ? G_SET : G_CLEAR, y);
     end
   end
-  if (!err && op != R_FIND1 && op != R_FIND0) b = val != 0;
+  if (!err && op != R_FIND1 && op != R_FIND0 && op != R_MATCH) b = val != 0;
+  if (!err && op == R_MATCH && fn[0] && !b) val = '0;
 endtask
