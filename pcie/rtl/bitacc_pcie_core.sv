@@ -32,7 +32,8 @@ module bitacc_pcie_core #(
   parameter int LANES          = 8,
   parameter int WORDS_PER_LANE = 2048,
   parameter int ROB_DEPTH      = 32,
-  parameter bit WITH_MATCH     = 1'b1
+  parameter bit WITH_MATCH     = 1'b1,
+  parameter int MATCH_LANES    = LANES
 )(
   input  logic         clk,
   input  logic         reset,
@@ -68,7 +69,7 @@ module bitacc_pcie_core #(
   logic        eng_idle;
 
   bitacc_engine #(.LANES(LANES), .WORDS_PER_LANE(WORDS_PER_LANE), .ROB_DEPTH(ROB_DEPTH),
-                  .WITH_MATCH(WITH_MATCH)) u_engine (
+                  .WITH_MATCH(WITH_MATCH), .MATCH_LANES(MATCH_LANES)) u_engine (
     .clk, .reset,
     .cmd_valid(in_valid), .cmd_ready(in_ready),
     .cmd_op(in_data[67:64]), .cmd_base(64'd0), .cmd_offset(in_data[63:0]),

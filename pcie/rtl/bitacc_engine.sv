@@ -50,7 +50,10 @@
 // a write: LANES words per 2 cycles. MATCH steps like a bit range; lane i
 // checks the 64 positions of the word before its own (word w - 1), with the
 // window {word w, word w - 1}; lane 0 takes word w - 1 from the last lane of
-// the previous step. That is LANES * 64 positions per cycle.
+// the previous step. With MATCH_LANES < LANES, each group of LANES words is
+// matched in LANES / MATCH_LANES sub-steps (the group is read again in each;
+// MATCH does not write): unit u takes word sub * MATCH_LANES + u. That is
+// MATCH_LANES * 64 positions per cycle.
 //
 // Timing: every block-RAM port is driven by a register (through the port
 // mux), the descriptor's 64-bit sums are registered before they are compared,
@@ -66,7 +69,8 @@ module bitacc_engine #(
   parameter int WORDS_PER_LANE = 512,   // power of two, >= 2
   parameter int ROB_DEPTH      = 32,    // power of two; max operations in flight
   parameter int FIFO_DEPTH     = 16,    // per-lane queue; power of two
-  parameter bit WITH_MATCH     = 1'b1   // MATCH unit (about 2,500 LUTs per lane on XC7)
+  parameter bit WITH_MATCH     = 1'b1,  // MATCH unit
+  parameter int MATCH_LANES    = LANES  // matcher units (power of two, 1 .. LANES; ~4,000 LUTs each on XC7)
 )(
   input  logic        clk,
   input  logic        reset,
@@ -108,6 +112,8 @@ module bitacc_engine #(
   localparam int CW = BW + 1;                    // bit count width (0 .. WORDS*64)
   localparam int SW = $clog2(ROB_DEPTH);
   localparam int FW = $clog2(FIFO_DEPTH);
+  localparam int MK  = LANES / MATCH_LANES;      // MATCH sub-steps per group
+  localparam int SBW = MK > 1 ? $clog2(MK) : 1;
 
   localparam logic [3:0] OP_SET = 4'd2, OP_CLEAR = 4'd3, OP_TOGGLE = 4'd4;
   localparam logic [3:0] OP_COUNT = 4'd8, OP_FIND1 = 4'd9, OP_FIND0 = 4'd10,
@@ -178,7 +184,7 @@ module bitacc_engine #(
   logic          d_valid, d_take;
   logic          accept, emit;
   logic [1:0]    p_cnt_next;
-  logic          p_slot;              // entry an accepted descriptor goes into
+  logic          p_wp, p_rp;          // write and read slots of the circular 2-entry buffer
 
   logic [63:0]   c_eff;               // effective bit address, mod 2^64
   assign c_eff     = (cmd_base << 3) + cmd_offset;
@@ -187,11 +193,11 @@ module bitacc_engine #(
   assign p_valid   = p_cnt != 2'd0;
   assign p_take    = p_valid && (!d_valid || d_take);
   assign p_cnt_next    = p_cnt + 2'(accept) - 2'(p_take);
-  assign p_slot        = !(p_cnt == 2'd0 || (p_cnt == 2'd1 && p_take));
   // inflight counts the descriptors held in stages P and D too.
   assign inflight_next = inflight + (SW+1)'(accept) - (SW+1)'(emit);
 
-  // the head entry, as stage D sees it
+  // the head entry, as stage D sees it (taking it only moves p_rp, so the
+  // dispatch decision drives no wide enable here)
   logic [SW-1:0] p_seq;
   logic [3:0]    p_op;
   logic [2:0]    p_fn;
@@ -201,13 +207,13 @@ module bitacc_engine #(
   logic [23:0]   p_src;
   logic [64:0]   p_end;
   logic [32:0]   p_send;
-  assign p_seq = pe_seq[0]; assign p_op = pe_op[0]; assign p_fn = pe_fn[0]; assign p_dry = pe_dry[0];
-  assign p_eff = pe_eff[0]; assign p_len = pe_len[0]; assign p_src = pe_src[0];
-  assign p_end = pe_end[0]; assign p_send = pe_send[0];
+  assign p_seq = pe_seq[p_rp]; assign p_op = pe_op[p_rp]; assign p_fn = pe_fn[p_rp]; assign p_dry = pe_dry[p_rp];
+  assign p_eff = pe_eff[p_rp]; assign p_len = pe_len[p_rp]; assign p_src = pe_src[p_rp];
+  assign p_end = pe_end[p_rp]; assign p_send = pe_send[p_rp];
 
   always_ff @(posedge clk) begin
     if (reset) begin
-      p_cnt <= '0; p_rdy <= 1'b0; next_seq <= '0;
+      p_cnt <= '0; p_rdy <= 1'b0; next_seq <= '0; p_wp <= 1'b0; p_rp <= 1'b0;
       for (int i = 0; i < 2; i++) begin
         pe_seq[i] <= '0; pe_op[i] <= '0; pe_fn[i] <= '0; pe_dry[i] <= 1'b0; pe_eff[i] <= '0;
         pe_len[i] <= '0; pe_src[i] <= '0; pe_end[i] <= '0; pe_send[i] <= '0;
@@ -215,22 +221,19 @@ module bitacc_engine #(
     end else begin
       p_cnt <= p_cnt_next;
       p_rdy <= p_cnt_next < 2'd2 && inflight_next < (SW+1)'(ROB_DEPTH);
-      if (p_take) begin                 // shift entry 1 to the head
-        pe_seq[0] <= pe_seq[1]; pe_op[0] <= pe_op[1]; pe_fn[0] <= pe_fn[1]; pe_dry[0] <= pe_dry[1];
-        pe_eff[0] <= pe_eff[1]; pe_len[0] <= pe_len[1]; pe_src[0] <= pe_src[1];
-        pe_end[0] <= pe_end[1]; pe_send[0] <= pe_send[1];
-      end
-      if (accept) begin                 // into the first free entry after the shift
-        pe_seq[p_slot]  <= next_seq;
-        pe_op[p_slot]   <= cmd_op;
-        pe_fn[p_slot]   <= cmd_fn;
-        pe_dry[p_slot]  <= cmd_dry;
-        pe_eff[p_slot]  <= c_eff;
-        pe_len[p_slot]  <= cmd_len;
-        pe_src[p_slot]  <= cmd_src;
-        pe_end[p_slot]  <= {1'b0, c_eff} + 65'(cmd_len);
-        pe_send[p_slot] <= 33'(cmd_src) + 33'(cmd_len);
-        next_seq   <= next_seq + 1'b1;
+      if (p_take) p_rp <= !p_rp;
+      if (accept) begin
+        pe_seq[p_wp]  <= next_seq;
+        pe_op[p_wp]   <= cmd_op;
+        pe_fn[p_wp]   <= cmd_fn;
+        pe_dry[p_wp]  <= cmd_dry;
+        pe_eff[p_wp]  <= c_eff;
+        pe_len[p_wp]  <= cmd_len;
+        pe_src[p_wp]  <= cmd_src;
+        pe_end[p_wp]  <= {1'b0, c_eff} + 65'(cmd_len);
+        pe_send[p_wp] <= 33'(cmd_src) + 33'(cmd_len);
+        p_wp          <= !p_wp;
+        next_seq      <= next_seq + 1'b1;
       end
     end
   end
@@ -341,6 +344,7 @@ module bitacc_engine #(
   logic [WW-1:0] r_src;
   logic [WW:0]   r_n;
   logic [GW-1:0] r_g, r_glast;        // step: group (bit ranges, MATCH) or j (BULK)
+  logic [SBW-1:0] r_sub;              // MATCH sub-step within the group
   logic          r_phase;             // BULK: 0 src read, 1 dst read
   logic [63:0]   r_lowm, r_highm;     // bit masks of the first and last word of the range
   logic [CW-1:0] r_acc;
@@ -373,6 +377,7 @@ module bitacc_engine #(
   logic          s1_valid, s2_valid, s3_valid, s4_valid, s5_valid, s6_valid;
   logic [2:0]    s1_kind, s2_kind, s3_kind;
   logic [GW-1:0] s1_g, s2_g, s3_g, s4_g, s5_g;
+  logic [SBW-1:0] s1_sub, s2_sub, s3_sub, s4_sub, s5_sub;
   logic [6:0]    s5_cnt [LANES];
   logic [LANES-1:0] s5_hit;
   logic [5:0]    s5_pos [LANES];
@@ -392,8 +397,12 @@ module bitacc_engine #(
     s5_sum = t[0];
     s5_any = 1'b0; s5_first = '0;
     for (int i = LANES - 1; i >= 0; i--) if (s5_hit[i]) begin s5_any = 1'b1; s5_first = LW'(i); end
-    // MATCH results of lane i belong to word {g, i} - 1
-    s5_word = {s5_g, s5_first} - (WW+1)'(r_match);
+    // MATCH results of unit i belong to word g * LANES + sub * MATCH_LANES + i - 1
+    if (r_match)
+      s5_word = (WW+1)'({s5_g, LW'(0)}) + (WW+1)'(s5_sub) * (WW+1)'(MATCH_LANES)
+                + (WW+1)'(s5_first) - (WW+1)'(1);
+    else
+      s5_word = {s5_g, s5_first};
   end
 
   always_ff @(posedge clk) begin
@@ -402,6 +411,8 @@ module bitacc_engine #(
       r_state <= R_IDLE; r_seq <= '0; r_op <= '0; r_fn <= '0; r_dry <= 1'b0; r_empty <= 1'b0;
       r_lo <= '0; r_hi <= '0; r_src <= '0; r_n <= '0; r_g <= '0; r_glast <= '0;
       r_phase <= 1'b0; r_lowm <= '0; r_highm <= '0; r_acc <= '0; r_found <= 1'b0; r_idx <= '0;
+      r_sub <= '0;
+      s1_sub <= '0; s2_sub <= '0; s3_sub <= '0; s4_sub <= '0; s5_sub <= '0;
       r_pat_lane <= '0; r_msk_lane <= '0; m_top <= '0; m_neg <= 1'b0;
       s1_valid <= 1'b0; s1_kind <= K_BITS; s1_g <= '0;
       s2_valid <= 1'b0; s2_kind <= K_BITS; s2_g <= '0;
@@ -423,7 +434,7 @@ module bitacc_engine #(
           r_highm <= ~64'd0 >> (6'd63 - r_hi[5:0]);
           r_pat_lane <= r_src[LW-1:0];
           r_msk_lane <= r_src[LW-1:0] + 1'b1;
-          r_phase <= 1'b0;
+          r_phase <= 1'b0; r_sub <= '0;
           r_acc   <= '0; r_found <= 1'b0; r_idx <= '0;
           r_state <= r_empty ? R_DRAIN : (r_match ? R_PAT : R_ISSUE);
         end
@@ -452,6 +463,15 @@ module bitacc_engine #(
               if (r_g == r_glast) r_state <= R_DRAIN;
               r_g <= r_g + 1'b1;
             end
+          end else if (r_match && MK > 1) begin
+            if (r_sub == SBW'(MK - 1)) begin
+              if (r_g == r_glast || (r_find && r_found)) r_state <= R_DRAIN;
+              r_g   <= r_g + 1'b1;
+              r_sub <= '0;
+            end else begin
+              if (r_find && r_found) r_state <= R_DRAIN;
+              r_sub <= r_sub + 1'b1;
+            end
           end else begin
             if (r_g == r_glast || (r_find && r_found)) r_state <= R_DRAIN;
             r_g <= r_g + 1'b1;
@@ -464,9 +484,10 @@ module bitacc_engine #(
         default: r_state <= R_IDLE;
       endcase
 
-      s1_valid <= s0_valid; s1_kind <= s0_kind; s1_g <= r_g;
-      s2_valid <= s1_valid; s2_kind <= s1_kind; s2_g <= s1_g;
-      s3_valid <= s2_valid; s3_kind <= s2_kind; s3_g <= s2_g;
+      s1_valid <= s0_valid; s1_kind <= s0_kind; s1_g <= r_g;  s1_sub <= r_sub;
+      s2_valid <= s1_valid; s2_kind <= s1_kind; s2_g <= s1_g; s2_sub <= s1_sub;
+      s3_valid <= s2_valid; s3_kind <= s2_kind; s3_g <= s2_g; s3_sub <= s2_sub;
+      s4_sub <= s3_sub; s5_sub <= s4_sub;
       s4_valid <= s3_valid && (s3_kind == K_BITS || s3_kind == K_DST || s3_kind == K_MAT);  s4_g <= s3_g;
       s5_valid <= s4_valid; s5_g <= s4_g;
       s6_valid <= s5_valid;
@@ -623,7 +644,11 @@ module bitacc_engine #(
       logic [WW:0]   wv;                // word this lane's mask refers to
       logic [WW:0]   lo_w, hi_w;
       logic          s1_kvalid;
-      assign wv        = {s1_g, LW'(g)} - (WW+1)'(s1_kind == K_MAT);
+      // MATCH: unit g checks the positions of word g*LANES + sub*MATCH_LANES + g - 1
+      assign wv        = (s1_kind == K_MAT)
+                         ? (WW+1)'({s1_g, LW'(0)}) + (WW+1)'(s1_sub) * (WW+1)'(MATCH_LANES)
+                           + (WW+1)'(g) - (WW+1)'(1)
+                         : {s1_g, LW'(g)};
       assign lo_w      = (WW+1)'(r_lo[BW-1:6]);
       assign hi_w      = (WW+1)'(r_hi[BW-1:6]);
       assign s1_kvalid = ((WW+1)'({s1_g[AW-1:0], LW'(0)}) + (WW+1)'(q_off)) < r_n;
@@ -649,12 +674,28 @@ module bitacc_engine #(
         end
       end
 
+      // Per-lane copies of the step's control (kept apart, so that no single
+      // control net fans out to every lane's 64-bit muxes). l_op/l_fn/l_dry
+      // follow r_op/r_fn/r_dry one cycle later, long before S3 uses them.
+      (* keep *) logic [2:0] l3_kind;
+      (* keep *) logic       l3_valid;
+      (* keep *) logic [3:0] l_op;
+      (* keep *) logic [2:0] l_fn;
+      (* keep *) logic       l_dry;
+      (* keep *) always_ff @(posedge clk) begin
+        if (reset) begin
+          l3_kind <= K_BITS; l3_valid <= 1'b0; l_op <= '0; l_fn <= '0; l_dry <= 1'b0;
+        end else begin
+          l3_kind <= s2_kind; l3_valid <= s2_valid; l_op <= r_op; l_fn <= r_fn; l_dry <= r_dry;
+        end
+      end
+
       // S3 compute, from registered data
       logic [63:0] src_q;               // BULK: this dst lane's src word of the current step
       logic [63:0] sel, fillword, srcw, bulkword, mvec;
-      assign sel = (r_op == OP_FIND0 ? ~rq[g] : rq[g]) & s3_mask;
+      assign sel = (l_op == OP_FIND0 ? ~rq[g] : rq[g]) & s3_mask;
       always_comb begin
-        case (r_op)
+        case (l_op)
           OP_SETR:   fillword = rq[g] | s3_mask;
           OP_CLEARR: fillword = rq[g] & ~s3_mask;
           default:   fillword = rq[g] ^ s3_mask;     // FLIPR
@@ -662,7 +703,7 @@ module bitacc_engine #(
       end
       assign srcw = src_q;
       always_comb begin
-        case (r_fn)
+        case (l_fn)
           FN_COPY: bulkword = srcw;
           FN_AND:  bulkword = rq[g] & srcw;
           FN_OR:   bulkword = rq[g] | srcw;
@@ -670,20 +711,37 @@ module bitacc_engine #(
           default: bulkword = rq[g] & ~srcw;      // ANDN
         endcase
       end
-      if (WITH_MATCH) begin : matcher
-        // positions p of word w - 1: window bits p .. p+63 of {word w, word w - 1}.
-        // Word w - 1 is the left lane's word of this step, registered here at
-        // S2; lane 0's is the last lane's word of the previous step (steps
-        // issue on consecutive cycles), which is still in rq[LANES - 1].
-        logic [63:0]  rq_left;
-        logic [127:0] win;
+      if (WITH_MATCH && g < MATCH_LANES) begin : matcher
+        // positions p of word w - 1: window bits p .. p+63 of {word w, word w - 1},
+        // w = this sub-step's word idx of the group. Both are registered here at
+        // S2. For idx 0, word w - 1 is the last lane's word of the previous
+        // group (sub-steps issue on consecutive cycles), still in rq[LANES - 1].
+        logic [LW-1:0] idx;
+        logic [63:0]   m_hi, m_lo;
+        logic [127:0]  win;
+        // (s2_sub is 0 when MATCH_LANES == LANES, where LW'(MATCH_LANES) wraps to 0)
+        assign idx = LW'(LW'(s2_sub) * LW'(MATCH_LANES) + LW'(g));
         always_ff @(posedge clk) begin
-          if (reset) rq_left <= '0;
-          else rq_left <= (g == 0) ? rq[LANES-1] : lane_rdata[(g + LANES - 1) % LANES];
+          if (reset) begin
+            m_hi <= '0; m_lo <= '0;
+          end else begin
+            m_hi <= lane_rdata[idx];
+            m_lo <= (idx == '0) ? rq[LANES-1] : lane_rdata[LW'(idx - 1'b1)];
+          end
         end
-        assign win = {rq[g], rq_left};
+        assign win = {m_hi, m_lo};
+        // this unit's copy of the pattern and mask (loaded in R_PSET1, before any
+        // MATCH step), so their bits do not fan out across all units
+        (* keep *) logic [63:0] u_pat, u_msk;
+        (* keep *) always_ff @(posedge clk) begin
+          if (reset) begin
+            u_pat <= '0; u_msk <= '0;
+          end else if (r_state == R_PSET1) begin
+            u_pat <= r_pat; u_msk <= r_msk;
+          end
+        end
         always_comb
-          for (int p = 0; p < 64; p++) mvec[p] = ~|((win[p +: 64] ^ r_pat) & r_msk);
+          for (int p = 0; p < 64; p++) mvec[p] = ~|((win[p +: 64] ^ u_pat) & u_msk);
       end else begin : no_matcher
         assign mvec = '0;
       end
@@ -699,17 +757,17 @@ module bitacc_engine #(
           w_we    <= 1'b0;
           w_waddr <= s3_waddr;
           // the cross-lane rotation ends in this register
-          if (s3_valid && s3_kind == K_SRC) src_q <= rq[src_sel];
-          case (s3_kind)
+          if (l3_valid && l3_kind == K_SRC) src_q <= rq[src_sel];
+          case (l3_kind)
             K_DST: begin
-              w_we    <= s3_valid && s3_kvalid && !r_dry;
+              w_we    <= l3_valid && s3_kvalid && !l_dry;
               w_wdata <= bulkword;
               s4_word <= s3_kvalid ? bulkword : 64'd0;
             end
-            K_MAT: s4_word <= mvec & s3_mask;
+            K_MAT: s4_word <= (g < MATCH_LANES) ? (mvec & s3_mask) : 64'd0;
             default: begin
-              w_we    <= s3_valid && s3_kind == K_BITS && s3_mask != '0
-                         && (r_op == OP_SETR || r_op == OP_CLEARR || r_op == OP_FLIPR);
+              w_we    <= l3_valid && l3_kind == K_BITS && s3_mask != '0
+                         && (l_op == OP_SETR || l_op == OP_CLEARR || l_op == OP_FLIPR);
               w_wdata <= fillword;
               s4_word <= sel;
             end

@@ -33,6 +33,9 @@ extern "C" {
 #ifndef MOCK_MATCH
 #define MOCK_MATCH 1
 #endif
+#ifndef MOCK_MATCH_LANES
+#define MOCK_MATCH_LANES MOCK_LANES
+#endif
 
 static Vbitacc_pcie_core *core;
 static uint64_t cycles;
@@ -78,7 +81,9 @@ extern "C" uint32_t litepcie_readl(int, uint32_t addr)
         return (MOCK_LANES << CSR_BITACC_CONFIG_LANES_OFFSET)
              | (MOCK_WPL << CSR_BITACC_CONFIG_WORDS_PER_LANE_OFFSET);
     case CSR_BITACC_VERSION_ADDR:        return 3;     // FORMAT_VERSION in bitacc_litefury.py
-    case CSR_BITACC_FEATURES_ADDR:       return MOCK_MATCH << CSR_BITACC_FEATURES_MATCH_OFFSET;
+    case CSR_BITACC_FEATURES_ADDR:
+        return MOCK_MATCH << CSR_BITACC_FEATURES_MATCH_OFFSET
+             | (MOCK_MATCH ? MOCK_MATCH_LANES : 0) << CSR_BITACC_FEATURES_MATCH_LANES_OFFSET;
     default:
         fprintf(stderr, "mock: read of unmapped CSR 0x%x\n", addr);
         return 0xdeadbeef;

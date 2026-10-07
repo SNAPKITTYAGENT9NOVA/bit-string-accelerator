@@ -90,10 +90,10 @@ from different threads at the same time. With one test thread it passed 40 of
   Tiny Tapeout top that passes DRC, LVS, antenna, timing and the Tiny Tapeout precheck; it has
   not been submitted or fabricated. The SPICE deck is an RC model, not extracted silicon.
 - The PCIe design has not run on a LiteFury: the bitstream needs Vivado. An open-source place
-  and route (nextpnr-xilinx) reaches 79.6 MHz, not 125 MHz; Vivado's result is unknown. At
-  8 lanes the card is slower than one CPU core for COUNT/BULK. MATCH (pattern search) would be
-  about 7x a 4-thread CPU, but at 8 lanes it uses 65% of the FPGA's LUTs and does not route;
-  see `pcie/README.md`.
+  and route (nextpnr-xilinx) reaches 88 MHz (84 MHz with a 2-unit MATCH), not 125 MHz;
+  Vivado's result is unknown. The card is slower than one CPU core for COUNT/BULK; MATCH
+  (pattern search) with 2 units is expected to be about 2x a 4-thread CPU at 125 MHz and about
+  1.2-1.5x at 84 MHz; see `pcie/README.md`.
 
 The Windows OpenCL SDK and `OpenCL.lib` from `rust-opencl-gpu` are not included
 here; the `ocl` crate locates the system OpenCL library.

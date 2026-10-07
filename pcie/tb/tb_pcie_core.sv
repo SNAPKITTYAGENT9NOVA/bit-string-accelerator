@@ -19,10 +19,14 @@ module tb_pcie_core;
 `ifndef MATCH
   `define MATCH 1
 `endif
+`ifndef MLANES
+  `define MLANES `LANES
+`endif
   localparam int LANES = `LANES;
   localparam int WPL   = `WPL;
   localparam int WORDS = LANES * WPL;
   localparam bit WITH_MATCH = `MATCH;
+  localparam int MLANES = `MLANES;          // MATCH units
   localparam int MAXOPS = 16384;
 
   logic clk = 1'b0, reset = 1'b1;
@@ -124,7 +128,7 @@ module tb_pcie_core;
   logic         idle;
   logic [31:0]  ops_accepted, results_sent;
 
-  bitacc_pcie_core #(.LANES(LANES), .WORDS_PER_LANE(WPL), .WITH_MATCH(WITH_MATCH)) dut (.*);
+  bitacc_pcie_core #(.LANES(LANES), .WORDS_PER_LANE(WPL), .WITH_MATCH(WITH_MATCH), .MATCH_LANES(MLANES)) dut (.*);
 
   // result sink: random backpressure plus a long stall every 1500 cycles
   logic [63:0] r_res [MAXOPS];
